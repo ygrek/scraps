@@ -383,7 +383,7 @@ Specify "w" or "words" for `units` to use OCaml words rather than bytes"""
     print "     major heap size = %d %s" % (self.e("caml_stat_heap_size","intnat") / unit, units)
     print " major heap top size = %d %s" % (self.e("caml_stat_top_heap_size","intnat") / unit, units)
     print "   total heap chunks =", self.e("caml_stat_heap_chunks","intnat")
-    print "         gray values = %d %s" % (gdb.parse_and_eval("gray_vals_size","size_t") * self.size_t.sizeof / unit, units)
+    print "         gray values = %d %s" % (self.e("gray_vals_size","size_t") * self.size_t.sizeof / unit, units)
     print "extra heap resources =", self.e("caml_extra_heap_resources","double")
     print
     print "minor heap :"
