@@ -1,0 +1,67 @@
+#! /usr/bin/env bash
+
+# Based on a pmp script from Aspersa (http://code.google.com/p/aspersa/) by Baron Schwartz,
+# in turn based on a script by Domas Mituzas at http://poormansprofiler.org
+
+usage()
+{
+   if [ "${OPT_ERR}" ]; then
+      echo "E: ${OPT_ERR}"
+   fi
+   cat <<-USAGE
+Usage: $0 [OPTIONS]
+   $0 does two things:
+     1) sets a breakpoint and gets a backtrace using GDB
+     2) aggregates it
+Options:
+   -i ITERATIONS  How many traces to gather and aggregate (default 10)
+   -l NUMBER      Aggregate only first NUMBER functions (default 16)
+   -p PID         Process ID of the process to trace
+   -t FUNCTION    Function to break on (default caml_call_gc)
+	USAGE
+   exit 1
+}
+
+
+main ()
+{
+  for o; do
+    case "${o}" in
+    --help)
+           usage;
+           ;;
+    -p)
+       shift; OPT_p="${1}"; shift;
+       ;;
+    -i)
+       shift; OPT_i="${1}"; shift;
+       ;;
+    -t)
+       shift; OPT_t="${1}"; shift;
+       ;;
+    -l)
+       shift; OPT_l="${1}"; shift;
+       ;;
+    -*)
+       OPT_ERR="unknown option ${o}";
+       usage
+       ;;
+    esac
+  done
+  export OPT_p="${OPT_p:-}";
+  export OPT_i="${OPT_i:-10}";
+  export OPT_t="${OPT_t:-caml_call_gc}";
+  export OPT_l="${OPT_l:-16}";
+
+  if [ ! "${OPT_p}" ] ; then
+    OPT_ERR="PID not specified";
+    usage
+  fi
+ 
+  for i in $(seq 1 $OPT_i); do
+    gdb -p "$OPT_p" "/proc/$OPT_p/exe" -batch -n -q -ex 'set interactive off' -ex "b $OPT_t" -ex 'c' -ex 'bt'\
+    |awk '/^#[^0]/ {print $4}' |uniq |head -n "$OPT_l" |paste -s -d , ;
+  done |sort |uniq -c |sort -n;
+}
+
+main $@
