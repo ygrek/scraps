@@ -1,6 +1,6 @@
 // Simple template to wrap C++ object as OCaml custom value
 // Copyright (C) 2010, ygrek <ygrek@autistici.org>
-// 04/06/2013
+// 13/12/2013
 //
 // value wrapped<Ptr>::alloc(Ptr)
 //    creates custom value with pointer to C++ object inside
@@ -28,7 +28,7 @@ extern "C" {
 #include <caml/signals.h>
 }
 
-#include <auto_ptr.h>
+#include <memory>
 
 // name used as identifier for custom_operations
 // should be instantiated for each wrapped pointer class
@@ -149,3 +149,30 @@ private:
   const caml_blocking_section& operator=( const caml_blocking_section& );
 };
 
+class generational_global_root // : boost::noncopyable
+{
+public:
+  generational_global_root(value v)
+  {
+    v_ = v;
+    caml_register_generational_global_root(&v_);
+  }
+  ~generational_global_root()
+  {
+    caml_remove_generational_global_root(&v_);
+    v_ = Val_unit;
+  }
+  void set(value v)
+  {
+    caml_modify_generational_global_root(&v_, v);
+  }
+  value get()
+  {
+    return v_;
+  }
+private:
+  generational_global_root(generational_global_root const&);
+  const generational_global_root& operator=(generational_global_root const&);
+private:
+  value v_;
+};
