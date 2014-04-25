@@ -392,8 +392,8 @@ Specify "w" or "words" for `units` to use OCaml words rather than bytes"""
     y_start = self.e("caml_young_start","size_t")
     y_ptr = self.e("caml_young_ptr","size_t")
     y_end = self.e("caml_young_end","size_t")
-    print "used %d total %d %s (0x%x .. 0x%x - 0x%x) (0x%x - 0x%x)" % \
-      ((y_end - y_ptr)/unit, minor_size/unit, units, y_start, y_ptr, y_end, minor_base, minor_base + self.malloced_size(minor_size))
+    print "0x%x .. 0x%x - 0x%x (total %d used %d %s) malloc: 0x%x - 0x%x" % \
+      (y_start, y_ptr, y_end, minor_size/unit, (y_end - y_ptr)/unit, units, minor_base, minor_base + self.malloced_size(minor_size))
     print
     print "major heap :"
     # the following casting is needed, otherwise gdb may sign-extend values without debug info
@@ -410,7 +410,7 @@ Specify "w" or "words" for `units` to use OCaml words rather than bytes"""
       p = p.cast(self.size_t.pointer())
       block = p.dereference()
       size = (p + 2).dereference()
-      print "%2d) chunk 0x%x %d %s (0x%x - 0x%x)" % (i, v, size/unit, units, block, block + self.malloced_size(size))
+      print "%2d) chunk 0x%x - 0x%x (%d %s) malloc: 0x%x - 0x%x" % (i, v, v+size, size/unit, units, block, block+self.malloced_size(size))
       i = i + 1
       v = (p + 3).dereference()
 
