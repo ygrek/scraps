@@ -1,6 +1,7 @@
-# Inspect OCaml values in GDB
+# Inspect OCaml heap and values in GDB
+# 2014/04/29
 #
-# http://ygrek.org.ua/p/code/mlvalues.py
+# https://github.com/ygrek/scraps/blob/master/mlvalues.py
 # (c) 2011 ygrek
 #
 # Description
@@ -16,24 +17,32 @@
 #    source mlvalues.py
 #
 # And inspect any OCaml value:
-#    ml_dump <value> # address or symbol representing OCaml value
+#    ml_dump [/r[N]] <value> # address or symbol representing OCaml value
+# optional /r flag controls the recursion depth limit when printing (default 1).
 # e.g.:
 #    ml_dump caml_globals
-#    ml_dump &camlList
+#    ml_dump /r &camlList
+#
 # Or inspect an array of values:
-#    ml_dump <start address> <number of values>
+#    ml_dump [/r[N]] <start address> <number of values>
 # e.g.:
 #    ml_dump <value*> 1 # inspecting single pointer to value
 #    ml_dump gray_vals 5
-# Or use Python class directly for detailed scrutiny, e.g.:
-#    python x = OCamlValue.of_gdb("caml_globals"); print x.size()
+#
 # Inspect local (stack) GC roots:
-#    ml_dump local_roots
+#    ml_dump [/r[N]] local_roots
+#
 # Show OCaml heap information:
 #    ml_heap
 #
+# Use Python class directly for detailed scrutiny, e.g.:
+#    python x = OCamlValue.of_gdb("caml_globals"); print x.size()
+#
 # Changelog
 # ---------
+#
+# 2014-04-29
+#   Limit recursion depth when printing
 #
 # 2014-03-31
 #   Be precise with type when reading runtime variables
@@ -210,6 +219,14 @@ class OCamlValue:
       l = l.field(1)
     return a
 
+  def get_list_length(self):
+    n = 0
+    l = self
+    while l.is_block():
+      n+=1
+      l = l.field(1)
+    return n
+
   def resolve(self):
     symbol = gdb.execute('info symbol ' + str(self.val()),False,True).split(' ',1)[0]
     if symbol == "No": # FIXME "No symbol matches"
@@ -220,16 +237,16 @@ class OCamlValue:
   def show_opaque(self,s):
     print "<%s at 0x%x>" % (s,self.val()),
 
-  def show_all(self,seq,delim,raw=False):
+  def show_all(self,seq,delim,recurse,raw=False):
     for i, x in enumerate(seq):
       if i:
         print delim,
       if raw:
         print x.resolve(),
       else:
-        x.show()
+        x.show(recurse)
 
-  def show(self):
+  def show(self,recurse):
     try:
       if self.v == 0:
         print "NULL" # not a value
@@ -237,19 +254,28 @@ class OCamlValue:
         print "%d" % self.int(),
       elif self.is_list():
         print "[",
-        self.show_all(self.get_list(), ';')
+        if recurse > 0:
+          self.show_all(self.get_list(), ';', recurse-1)
+        else:
+          print "%d values" % self.get_list_length(),
         print "]",
       else:
         t = self.tag()
         if t == 0:
           print "(",
-          self.show_all(self.fields(), ',')
+          if recurse > 0:
+            self.show_all(self.fields(), ',', recurse-1)
+          else:
+            print "%d fields" % self.size(),
           print ")",
         elif t == OCamlValue.LAZY_TAG:
           self.show_opaque("lazy")
         elif t == OCamlValue.CLOSURE_TAG:
           print "Closure(",
-          self.show_all(self.fields(), ',', raw=True)
+          if recurse > 0:
+            self.show_all(self.fields(), ',', recurse-1, raw=True)
+          else:
+            print "%d fields" % self.size(),
           print ")",
         elif t == OCamlValue.OBJECT_TAG:
 #	| x when x = Obj.object_tag ->
@@ -270,7 +296,10 @@ class OCamlValue:
           self.show_opaque("forward")
         elif t < OCamlValue.NO_SCAN_TAG:
           print "Tag%d(" % t,
-          self.show_all(self.fields(), ',')
+          if recurse > 0:
+            self.show_all(self.fields(), ',', recurse-1)
+          else:
+            print "%d fields" % self.size(),
           print ")",
         elif t == OCamlValue.STRING_TAG:
           print self.string().__repr__(),
@@ -307,13 +336,15 @@ class OCamlValue:
 class DumpOCamlValue(gdb.Command):
   """Recursively dumps runtime representation of OCaml value
 
-                 Dump value: ml_dump <value>
-   Dump the array of values: ml_dump <value[]> <N>
-  Dump the pointer to value: ml_dump <value*> 1
-Dump local (stack) GC roots: ml_dump local_roots"""
+                 Dump value: ml_dump [/r[N]] <value>
+   Dump the array of values: ml_dump [/r[N]] <value[]> <N>
+  Dump the pointer to value: ml_dump [/r[N]] <value*> 1
+Dump local (stack) GC roots: ml_dump [/r[N]] local_roots
+
+Optional /r flag controls the recursion depth limit."""
 
   def __init__(self):
-    gdb.Command.__init__(self, "ml_dump", gdb.COMMAND_DATA, gdb.COMPLETE_SYMBOL, True)
+    gdb.Command.__init__(self, "ml_dump", gdb.COMMAND_DATA, gdb.COMPLETE_SYMBOL, False)
 
   def parse_as_addr(self,addr):
     x = gdb.parse_and_eval(addr)
@@ -322,9 +353,9 @@ Dump local (stack) GC roots: ml_dump local_roots"""
     else: # l-value, prevent short read when no debugging info
       return gdb.parse_and_eval("*((size_t*)&"+addr+")").cast(self.size_t.pointer())
 
-  def show_ptr(self, addr):
+  def show_ptr(self, addr, recurse):
     print "*0x%x:" % addr.cast(self.size_t),
-    OCamlValue(addr.dereference()).show()
+    OCamlValue(addr.dereference()).show(recurse)
     print ""
 
   # ocaml runtime may be compiled without debug info so we have to be specific with types
@@ -333,25 +364,32 @@ Dump local (stack) GC roots: ml_dump local_roots"""
   def invoke(self, arg, from_tty):
     self.size_t = gdb.lookup_type("size_t")
     args = gdb.string_to_argv(arg)
+    recurse = 1
+    if len(args) > 0 and args[0].startswith("/r"):
+      s = args[0][2:]
+      if s == "":
+        recurse = float('inf')
+      else:
+        recurse = int(s)
+      args = args[1:]
     if len(args) < 1 or len(args) > 2:
-      print "usage: ml_dump <value>"
-      print "   or: ml_dump <value*> <len>"
+      print "Wrong usage, see \"help ml_dump\""
       return
     if len(args) == 2:
       addr = self.parse_as_addr(args[0])
       for i in range(int(args[1])):
-        self.show_ptr(addr + i)
+        self.show_ptr(addr + i, recurse)
     else:
       if args[0] == "local_roots":
         p = gdb.parse_and_eval("*(struct caml__roots_block**)&caml_local_roots")
         while p != 0:
           print "caml_frame 0x%x" % p.cast(self.size_t)
           for i in range(int(p['nitems'])):
-            self.show_ptr(p['tables'][i])
+            self.show_ptr(p['tables'][i], recurse)
           p = p['next']
       else:
         addr = self.parse_as_addr(args[0])
-        OCamlValue(addr).show()
+        OCamlValue(addr).show(recurse)
         print ""
 
 DumpOCamlValue()
