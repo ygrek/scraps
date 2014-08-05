@@ -203,8 +203,10 @@ main() {
          fi
       fi
       date;
+      PROC_EXE="/proc/$OPT_p/exe"
+      if [ ! -f $PROC_EXE ] ; then unset PROC_EXE ; fi
       for x in $(seq 1 $OPT_i); do
-         gdb -ex "set pagination 0" -ex "thread apply $OPT_t bt" -batch /proc/$OPT_p/exe -p $OPT_p >> "${OPT_k:-/tmp/aspersa}"
+         gdb -ex "set pagination 0" -ex "thread apply $OPT_t bt" -batch $PROC_EXE -p $OPT_p >> "${OPT_k:-/tmp/aspersa}"
          date +'TS %N.%s %F %T' >> "${OPT_k:-/tmp/aspersa}"
          sleep $OPT_s
       done
