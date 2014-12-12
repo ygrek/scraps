@@ -37,7 +37,7 @@ Options:
 aggregate_stacktrace() {
    maxlen="$1";
    demangle="$3";
-   cat > /tmp/aspersa.awk <<EOF
+   cat > ${tmpfile}.awk <<EOF
       BEGIN {
          s = "";
       }
@@ -135,13 +135,13 @@ aggregate_stacktrace() {
          print s
       }
 EOF
-   awk -f /tmp/aspersa.awk "$2" | sort | uniq -c | sort -r -n -k 1,1
-   rm -f /tmp/aspersa
+   awk -f ${tmpfile}.awk "$2" | sort | uniq -c | sort -r -n -k 1,1
 }
 
 # The main program to run.
 main() {
-   rm -f /tmp/aspersa
+   export tmpfile=$(tempfile --prefix=pmp);
+   echo ${tmpfile}
 
    # Get command-line options
    for o; do
@@ -203,21 +203,20 @@ main() {
          fi
       fi
       date;
-      PROC_EXE="/proc/$OPT_p/exe"
-      if [ ! -f $PROC_EXE ] ; then unset PROC_EXE ; fi
+   echo {OPT_k:-${tmpfile}}
       for x in $(seq 1 $OPT_i); do
-         gdb -ex "set pagination 0" -ex "thread apply $OPT_t bt" -batch $PROC_EXE -p $OPT_p >> "${OPT_k:-/tmp/aspersa}"
-         date +'TS %N.%s %F %T' >> "${OPT_k:-/tmp/aspersa}"
+         gdb -ex "set pagination 0" -ex "thread apply $OPT_t bt" -batch /proc/$OPT_p/exe -p $OPT_p >> "${OPT_k:-${tmpfile}}"
+         date +'TS %N.%s %F %T' >> "${OPT_k:-${tmpfile}}"
          sleep $OPT_s
       done
    fi
 
    if [ $# -eq 0 ]; then
-      aggregate_stacktrace "${OPT_l}" "${OPT_k:-/tmp/aspersa}" "${OPT_demangle}"
-      rm -f /tmp/aspersa
+      aggregate_stacktrace "${OPT_l}" "${OPT_k:-${tmpfile}}" "${OPT_demangle}"
    else
       aggregate_stacktrace "${OPT_l}" "$@" "${OPT_demangle}"
    fi
+   rm -f ${tmpfile} ${tmpfile}.awk
 }
 
 # Execute the program if it was not included from another file.  This makes it
