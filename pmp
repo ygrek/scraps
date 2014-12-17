@@ -141,7 +141,6 @@ EOF
 # The main program to run.
 main() {
    export tmpfile=$(tempfile --prefix=pmp);
-   echo ${tmpfile}
 
    # Get command-line options
    for o; do
@@ -203,7 +202,6 @@ main() {
          fi
       fi
       date;
-   echo {OPT_k:-${tmpfile}}
       for x in $(seq 1 $OPT_i); do
          gdb -ex "set pagination 0" -ex "thread apply $OPT_t bt" -batch /proc/$OPT_p/exe -p $OPT_p >> "${OPT_k:-${tmpfile}}"
          date +'TS %N.%s %F %T' >> "${OPT_k:-${tmpfile}}"
