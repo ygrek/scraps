@@ -1,5 +1,5 @@
 # Inspect OCaml heap and values in GDB
-# 2014/04/29
+# 2015/10/22
 #
 # https://github.com/ygrek/scraps/blob/master/mlvalues.py
 # (c) 2011 ygrek
@@ -40,6 +40,9 @@
 #
 # Changelog
 # ---------
+#
+# 2015-10-22
+#   Truncate long strings when printing
 #
 # 2014-04-29
 #   Limit recursion depth when printing
@@ -139,10 +142,17 @@ class OCamlValue:
   def val(self):
     return self.v
 
-  def string(self,enc='latin1'):
+  def show_string(self,enc='latin1'):
     assert self.tag() == OCamlValue.STRING_TAG
-    # FIXME caml_string_length
-    return self.v.cast(self.t_charp).string(enc)
+    temp = self.bsize() - 1
+    slen = temp - (self.v + temp).cast(self.t_charp).dereference()
+    assert 0 == (self.v + slen).cast(self.t_charp).dereference()
+    if slen <= 1024:
+        s = self.v.cast(self.t_charp).string(enc, 'ignore', slen)
+        print s.__repr__(),
+    else:
+        s = self.v.cast(self.t_charp).string(enc, 'ignore', 256)
+        print "%s..<%d bytes total>" % (s.__repr__(), slen),
 
   def float(self):
     assert self.tag() == OCamlValue.DOUBLE_TAG
@@ -302,7 +312,7 @@ class OCamlValue:
             print "%d fields" % self.size(),
           print ")",
         elif t == OCamlValue.STRING_TAG:
-          print self.string().__repr__(),
+          self.show_string()
         elif t == OCamlValue.DOUBLE_TAG:
           print "%f" % self.float(),
         elif t == OCamlValue.ABSTRACT_TAG:
