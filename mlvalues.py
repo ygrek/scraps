@@ -1,5 +1,5 @@
 # Inspect OCaml heap and values in GDB
-# 2015/10/22
+# 2015/11/06
 #
 # https://github.com/ygrek/scraps/blob/master/mlvalues.py
 # (c) 2011 ygrek
@@ -36,7 +36,7 @@
 #    ml_heap
 #
 # Use Python class directly for detailed scrutiny, e.g.:
-#    python x = OCamlValue.of_gdb("caml_globals"); print x.size()
+#    python x = OCamlValue(gdb.parse_and_eval("caml_globals")); print x.size()
 #
 # Changelog
 # ---------
