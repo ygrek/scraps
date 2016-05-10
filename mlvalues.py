@@ -1,5 +1,5 @@
 # Inspect OCaml heap and values in GDB
-# 2015/11/06
+# 2016/01/17
 #
 # https://github.com/ygrek/scraps/blob/master/mlvalues.py
 # (c) 2011 ygrek
@@ -35,11 +35,17 @@
 # Show OCaml heap information:
 #    ml_heap
 #
+# Scan OCaml heap region:
+#    ml_scan [/r[N]] addr bytes
+#
 # Use Python class directly for detailed scrutiny, e.g.:
 #    python x = OCamlValue(gdb.parse_and_eval("caml_globals")); print x.size()
 #
 # Changelog
 # ---------
+#
+# 2016-01-17
+#   New command `ml_scan` to show values in OCaml heap
 #
 # 2015-10-22
 #   Truncate long strings when printing
@@ -463,3 +469,51 @@ Specify "w" or "words" for `units` to use OCaml words rather than bytes"""
       v = (p + 3).dereference()
 
 ShowOCamlHeap()
+
+class ScanOCamlValue(gdb.Command):
+  """Scan region of OCaml heap and show all values in it
+
+    ml_scan [/r[N]] addr_start [bytes]
+
+Optional /r flag controls the recursion depth limit."""
+
+  def __init__(self):
+    gdb.Command.__init__(self, "ml_scan", gdb.COMMAND_DATA, gdb.COMPLETE_SYMBOL, False)
+
+  def parse_as_addr(self,addr):
+    x = gdb.parse_and_eval(addr)
+    if x.address == None:
+      return x.cast(self.size_t.pointer())
+    else: # l-value, prevent short read when no debugging info
+      return gdb.parse_and_eval("*((size_t*)&"+addr+")").cast(self.size_t.pointer())
+
+  def show_val(self, addr, recurse):
+    print "0x%x = " % addr.cast(self.size_t),
+    OCamlValue(addr).show(recurse)
+    print ""
+
+  def invoke(self, arg, from_tty):
+    self.size_t = gdb.lookup_type("size_t")
+    args = gdb.string_to_argv(arg)
+    recurse = 1
+    if len(args) > 0 and args[0].startswith("/r"):
+      s = args[0][2:]
+      if s == "":
+        recurse = float('inf')
+      else:
+        recurse = int(s)
+      args = args[1:]
+    if len(args) < 1 or len(args) > 2:
+      print "Wrong usage, see \"help ml_scan\""
+      return
+    addr = self.parse_as_addr(args[0])
+    if len(args) == 2:
+        addr_end = addr + int(args[1]) / self.size_t.sizeof
+    else:
+        addr_end = addr + 64
+    while addr < addr_end:
+        self.show_val(addr,recurse)
+        x = OCamlValue(addr)
+        addr = addr + x.size() + 1
+
+ScanOCamlValue()
