@@ -2,6 +2,7 @@
 * [cxx_wrapped.h](cxx_wrapped.h) - simple template to wrap C++ object as OCaml custom value (used for example in [ocaml-hypertable](http://hypertable.forge.ocamlcore.org/))
 * [idn.ml](idn.ml) - copy of [punycode and IDN library for OCaml](http://caml.ru/~dima/ocaml/idn.ml) with some bugfixes
 * [Measure](measure.ml) - simple module to measure code speed and allocation rate
+* [memsum](memsum) - shell script to quickly see memory usage summed over process groups
 * [mlvalues.py](mlvalues.py) - GDB/python script to inspect OCaml runtime, heap and individual values
 * [Php_serialize](php_serialize.ml) - parse and construct [php\_serialize](http://php.net/manual/en/function.serialize.php)'d values
 * [pmp](pmp) - modified [poor man's profiler](http://poormansprofiler.org/) script (with OCaml names demangling)

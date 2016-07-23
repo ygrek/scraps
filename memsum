@@ -1,0 +1,22 @@
+#! /usr/bin/env bash
+#
+# Quick overview of memory usage by process groups
+
+ps h -eo pid,ppid,rss,args \
+| awk '{
+    cmd = $4
+    for (i=5;i<=NF;i++) { cmd = cmd " " $i } # reconstruct cmd
+    name[$1] = cmd ; # save cmd for pid
+    total += $3
+    if ($2>10) { acc[$2] += $3 } # group rss by parent pid
+    else { acc[cmd] += $3 } # for toplevel processes - group rss by cmd
+  }
+  END {
+    shown = 0
+    for (i in acc) {
+      mem = acc[i]/1024/1024;
+      if (mem > 1) { printf("%.1fG %s\n",mem,(i in name) ? name[i] : i); shown += acc[i]; }
+    };
+    printf("%.1fG TOTAL (%.1fG shown)",total/1024/1024, shown/1024/1024)
+  }' \
+| sort -nk1
