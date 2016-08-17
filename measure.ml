@@ -1,8 +1,11 @@
 (**
   Simple module to measure code speed and allocation rate
- 
+
   http://ygrek.org.ua/p/code/measure.ml
   2011-08-08
+
+  This is free and unencumbered software released into the public domain.
+  For more information, please refer to <http://unlicense.org/>
 *)
 
 open Printf
@@ -46,25 +49,25 @@ let show name f x =
 
 (**
   Example usage:
- 
+
 let src = "We should forget about small efficiencies, say about 97% of the time: premature optimization is the root of all evil"
- 
+
 let run f = for i = 1 to 1_000_000 do ignore (f () : string) done
 let scanf () = Scanf.sscanf src "%s@:" (fun s -> s)
 let sub () = String.sub src 0 (String.index src ':')
- 
+
 let () =
   Measure.show "scanf" run scanf;
   Measure.show "sub" run sub;
   ()
- 
+
   Compile:
- 
+
 ocamlopt unix.cmxa measure.ml bench.ml -o bench
- 
+
   Result:
- 
+
        scanf : allocated   2.2GB, heap      0B, collect  0 1419  8888, elapsed 2.072 sec
          sub : allocated  76.3MB, heap      0B, collect  0    0   305, elapsed 0.162 sec
- 
+
 *)

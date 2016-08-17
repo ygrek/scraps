@@ -4,6 +4,8 @@
 # https://github.com/ygrek/scraps/blob/master/mlvalues.py
 # (c) 2011 ygrek
 #
+# Licensed under the terms of BSD 3-clause
+#
 # Description
 # -----------
 #

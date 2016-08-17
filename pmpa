@@ -3,6 +3,9 @@
 # Based on a pmp script from Aspersa (http://code.google.com/p/aspersa/) by Baron Schwartz,
 # in turn based on a script by Domas Mituzas at http://poormansprofiler.org
 
+# License: BSD 3-clause
+# https://opensource.org/licenses/BSD-3-Clause
+
 usage()
 {
    if [ "${OPT_ERR}" ]; then

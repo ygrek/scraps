@@ -1,6 +1,9 @@
-(** 
-  PHP serialization 
+(**
+  PHP serialization
   http://php.net/manual/en/function.serialize.php
+
+  This is free and unencumbered software released into the public domain.
+  For more information, please refer to <http://unlicense.org/>
 *)
 
 open ExtLib
@@ -43,14 +46,14 @@ Anatomy of a serialize()'ed value:
     attempting to use an object as a key will result in the same behavior as using an array will.
 *)
 
-type php = AI of (int * php) list | AS of (string * php) list | S of string | I of int | B of bool | F of float | N 
+type php = AI of (int * php) list | AS of (string * php) list | S of string | I of int | B of bool | F of float | N
 
 let check x y = if x <> y then failwith (Printf.sprintf "Php_serialize failed : %u <> %u" x y)
 
 let rec parse_one = parser
   | [< ''a'; '':'; n=number; '':'; ''{'; a=parse_array; ''}' >] -> ignore n;(*check n (List.length a);*) a
   | [< ''b'; '':'; n=number; '';' >] -> B (0 <> n)
-  | [< ''d'; '':'; f=parse_float_semi; >] -> F f 
+  | [< ''d'; '':'; f=parse_float_semi; >] -> F f
   | [< n=parse_int >] -> I n
   | [< s=parse_str >] -> S s
   | [< ''N'; '';' >] -> N
@@ -85,10 +88,10 @@ let parse stream =
     let tail = Stream.npeek 10 stream >> List.map (String.make 1) >> String.concat "" in
     Printf.sprintf "Position %u : %s" (Stream.count stream) tail
   in
-  try 
+  try
     let r = parse_one stream in
     Stream.empty stream; r
-  with 
+  with
   | Stream.Error _ | Stream.Failure -> failwith (show ())
 
 let parse_string = parse $ Stream.of_string
