@@ -1071,3 +1071,54 @@ Optional /r flag controls the recursion depth limit."""
         addr = addr + x.size() + 1
 
 ScanOCamlValue()
+
+class ShowMemory(gdb.Command):
+  """
+  Shows memory space and its disposition
+  ml_target <address|"all"> [verbosity]
+  """
+
+  def __init__(self):
+    gdb.Command.__init__(self, "ml_target", gdb.COMMAND_DATA, gdb.COMPLETE_SYMBOL, False)
+
+  def parse_as_addr(self,addr):
+    x = gdb.parse_and_eval(addr)
+    if x.address == None:
+      return x.cast(size_t.pointer())
+    else: # l-value, prevent short read when no debugging info
+      return gdb.parse_and_eval("*((size_t*)&"+addr+")").cast(size_t.pointer())
+
+  @TraceAll
+  def invoke(self, arg, from_tty):
+    init_types()
+    init_memoryspace()
+    args = gdb.string_to_argv(arg)
+
+    if len(args) == 2 and args[0] == 'all':
+      verbosity = int(args[1])
+      address = None
+    elif len(args) == 1:
+      if args[0] == 'all':
+        address = None
+        verbosity = 0
+      else:
+        address = self.parse_as_addr(args[0])
+    else:
+      print("Wrong usage, see \"help ml_target\"")
+      return
+
+    try:
+      if address is None:
+        memoryspace.display(verbosity)
+      else:
+        memrange = memoryspace.get_range(address)
+        if memrange is None:
+          print("Address 0x%08X is invalid" % address)
+        else:
+          print("Address 0x%08X is part of: %s" % (address, str(memrange)))
+    except:
+        traceback.print_exc()
+
+
+ShowMemory()
+
