@@ -42,7 +42,7 @@
 #    ml_scan [/r[N]] addr bytes
 #
 # Use Python class directly for detailed scrutiny, e.g.:
-#    python x = OCamlValue(gdb.parse_and_eval("caml_globals")); print x.size()
+#    python x = OCamlValue(gdb.parse_and_eval("caml_globals")); print x.size_words()
 #
 # Changelog
 # ---------
@@ -122,6 +122,17 @@ def TraceAll(f):
       traceback.print_exc()
       raise
   return functools.update_wrapper(wrapper, f)
+
+def try_dereference(gdbval):
+  """
+  Attempt to dereference a gdb.Value returning None when the access fails.
+  """
+  try:
+    ret = gdbval.dereference()
+    ret.fetch_lazy()
+    return ret
+  except gdb.MemoryError:
+    return None
 
 # gdb.Type's used often throughout the script
 intnat = size_t = charp = doublep = heap_chunk_head_p = None
@@ -650,6 +661,7 @@ def resolve(address):
 # Just a mere OCaml coder. And this is my first python program.
 class OCamlValue:
 
+  VALUE_TAG = 0
   LAZY_TAG = 246
   CLOSURE_TAG = 247
   OBJECT_TAG = 248
@@ -666,21 +678,27 @@ class OCamlValue:
   OUT_OF_HEAP_TAG = 1001
   UNALIGNED_TAG = 1002
 
-  def __init__(self,v):
-    # do not lookup types at class level cause this script may be run before
-    # the inferior image is loaded and gdb can't know sizeof(long) in advance
-    self.intnat = gdb.lookup_type("intnat")
-    self.t_charp = gdb.lookup_type("char").pointer()
-    self.t_doublep = gdb.lookup_type("double").pointer()
-    if type(v) == type(0):
-      self.v = gdb.Value(v)
+  VALID_TAGS = (VALUE_TAG, LAZY_TAG, CLOSURE_TAG, OBJECT_TAG, INFIX_TAG, FORWARD_TAG, NO_SCAN_TAG, ABSTRACT_TAG, STRING_TAG,
+                DOUBLE_TAG, DOUBLE_ARRAY_TAG, CUSTOM_TAG)
+
+  def __init__(self,v, parent=None, parentindex=None):
+    if isinstance(v, OCamlValue):
+      self.v = v.v
+    elif not isinstance(v, gdb.Value):
+      self.v = gdb.Value(v).cast(intnat)
     else:
-      self.v = v.cast(self.intnat)
+      self.v = v.cast(intnat)
+    self.parent = parent
+    self.parentindex = parentindex
+    if parent is not None and parentindex is None:
+      raise Exception("If a parent is specified, the parentindex is also expected")
 
   def is_int(self):
+    """Indicate whether the OCamlValue is an integer."""
     return self.v & 1 != 0
 
   def is_block(self):
+    """Indicate whether the OCamlValue is a pointer to an OCaml block."""
     return self.v & 1 == 0
 
   @staticmethod
@@ -694,31 +712,51 @@ class OCamlValue:
 
   @staticmethod
   def of_bool(x):
+    assert(x & (~1) == 0)
     return OCamlValue.of_int(x != 0)
 
   def int(self):
-    assert self.is_int()
+    """Get the integer value of this instance. Must only be called if it is an int."""
+    assert(self.is_int())
     return self.v >> 1
 
   def val(self):
+    """Get the gdb.Value of this instance."""
     return self.v
 
-  def show_string(self,enc='latin1'):
+  def _string(self,enc='latin1'):
     assert self.tag() == OCamlValue.STRING_TAG
-    temp = self.bsize() - 1
-    slen = temp - (self.v + temp).cast(self.t_charp).dereference()
-    assert 0 == (self.v + slen).cast(self.t_charp).dereference()
-    if slen <= 1024:
-        s = self.v.cast(self.t_charp).string(enc, 'ignore', slen)
-        print s.__repr__(),
-    else:
-        s = self.v.cast(self.t_charp).string(enc, 'ignore', 256)
-        print "%s..<%d bytes total>" % (s.__repr__(), slen),
 
-  def float(self):
+    byte_size = self.size_bytes()
+    if byte_size is None:
+      return "Invalid string: could not determine string size: value outside the heap: value = 0x%X" % self.v
+
+    padsize_byte = (self.v + (byte_size - 1)).cast(charp)
+    padsize = try_dereference(padsize_byte)
+    if padsize is None:
+      return "Invalid string: pad byte not in valid memory. value=0x%X, size in bytes=%d, pad byte: 0x%X" % (self.v, byte_size, padsize_byte)
+
+    slen = byte_size - 1 - padsize
+    trailing_nul = try_dereference((self.v + slen).cast(charp))
+    assert(trailing_nul is not None) # we shouldn't get here if we could dereference padsize above
+    if trailing_nul != 0:
+      return "Invalid string: no NUL-byte at end of string. value=0x%X, size in bytes=%d, last byte=%d" % (self.v, byte_size, trailing_nul)
+
+    if slen <= 1024:
+        s = self.v.cast(charp).string(enc, 'ignore', slen)
+        return s.__repr__()
+    else:
+        s = self.v.cast(charp).string(enc, 'ignore', 256)
+        return "%s..<%d bytes total>" % (s.__repr__(), slen)
+
+  def _float(self):
     assert self.tag() == OCamlValue.DOUBLE_TAG
-    # FIXME test
-    return self.v.cast(self.t_doublep).dereference()
+    words = self.size_words()
+    if words != doublep.target().sizeof: # Don't check for None, the assert already implies it
+      return "Invalid float: size=%d" % words
+    f = try_dereference(self.v.cast(doublep))
+    assert(f is not None) # This is quite unlikely, unless v is outside the heap, while the header is inside
+    return "%f" % f
 
   def __cmp__(self,other):
     if self.v == other.v:
@@ -739,50 +777,99 @@ class OCamlValue:
     return "OCamlValue(%s)" % self.__str__()
 
   def hd(self):
-    return (self.v - self.intnat.sizeof).cast(self.intnat.pointer()).dereference()
+    """Get the header value or None if inaccessible. Must only be called on a block."""
+    header = (self.v - intnat.sizeof).cast(size_t.pointer())
+    return try_dereference(header)
 
   def tag(self):
+    """Get the block tag or None if inaccessible. Must only be called on a block."""
     if self.is_int():
       return OCamlValue.INT_TAG
     else:
-      return self.hd() & 0xFF
+      hd = self.hd()
+      if hd is None:
+        return OCamlValue.OUT_OF_HEAP_TAG
+      return hd & 0xFF
 
-  def unsafe_field(self,i):
-    x = (self.v + i * self.intnat.sizeof).cast(self.intnat.pointer()).dereference()
-    return OCamlValue(x)
+  def _unsafe_field(self,i):
+    """
+    Get the contents of the indicated field or None if inaccessible.
+    Does not check boundaries nor validate this is a block.
+    """
+    x = try_dereference( (self.v + (i * intnat.sizeof)).cast(intnat.pointer()) )
+    if x is None:
+      return None
+    return OCamlValue(x, parent=self, parentindex = i)
 
   def field(self,i):
+    """
+    Get the contents of the indicated field or None if inaccessible.
+    Must only be called on a block, cannot obtain a double from a double array.
+    """
     assert self.is_block()
     assert self.tag () != OCamlValue.DOUBLE_ARRAY_TAG # FIXME not implemented
-    n = self.size()
+    n = self.size_words()
+    if n is None:
+      return None
     if i < 0 or i >= n:
       raise IndexError("field %d size %d" % (i,n))
-    return self.unsafe_field(i)
-    #t = self.intnat.array(n).pointer()
+    return self._unsafe_field(i)
+    #t = intnat.array(n).pointer()
     #return OCamlValue(self.v.cast(t).dereference()[i])
 
   def fields(self):
+    """
+    Get a list of all fields of this block.
+    Must only be called on a block, cannot obtain fields of a double array.
+    When any access goes out of bounds, a single None value is appended to
+    the list.
+    """
     assert self.is_block()
     assert self.tag () != OCamlValue.DOUBLE_ARRAY_TAG # FIXME not implemented
+
+    words = self.size_words()
+    if words is None:
+      return [None]
+
     a = []
-    for i in range(self.size()):
-      a.append(self.unsafe_field(i))
+    for i in range(int(words)):
+      field = self._unsafe_field(i)
+      a.append(field)
+      if field is None:
+        break # Append a single invalid value to indicate out-of-bounds to the user
     return a
 
-  def size(self):
+  def size_words(self):
+    """
+    Return the size of this block in number of words or None if inaccessible
+    Must only be called on a block.
+    """
     assert self.is_block()
-    return self.hd() >> 10
+    hd = self.hd()
+    if hd is None:
+      return None
+    return hd >> 10
 
-  def bsize(self):
-    return self.size() * self.intnat.sizeof
+  def size_bytes(self):
+    """
+    Return the size of this block in number of bytes or None if inaccessible
+    Must only be called on a block.
+    """
+    size_words = self.size_words()
+    if size_words is None:
+      return None
+    return size_words * intnat.sizeof
 
-  def is_list(self):
+  def _is_list(self):
+    """Indicate if this block describes a list."""
+    # TODO
     if self.is_int():
       return self.int() == 0
     else:
-      return self.size() == 2 and self.tag() == 0 and self.field(1).is_list()
+      return self.size_words() == 2 and self.tag() == 0 and self.field(1)._is_list()
 
   def get_list(self):
+    """Parse an OCaml list into a python list."""
     a = []
     l = self
     while l.is_block():
@@ -791,6 +878,7 @@ class OCamlValue:
     return a
 
   def get_list_length(self):
+    """Get the length of an OCaml list"""
     n = 0
     l = self
     while l.is_block():
@@ -803,49 +891,48 @@ class OCamlValue:
     return resolve(self.val())
 
   def show_opaque(self,s):
-    print "<%s at 0x%x>" % (s,self.val()),
+    print("<%s at 0x%x>" % (s,self.val()))
 
-  def show_all(self,seq,delim,recurse,raw=False):
+  def show_seq(self,seq,delim,recurse,raw=False):
     for i, x in enumerate(seq):
       if i:
-        print delim,
+        print(delim)
       if raw:
-        print x.resolve(),
+        print(x.resolve())
       else:
         x.show(recurse)
 
   @TraceMemoryError
   def show(self,recurse):
-    try:
       if self.v == 0:
-        print "NULL" # not a value
+        print("NULL") # not a value
       elif self.is_int():
-        print "%d" % self.int(),
-      elif self.is_list():
-        print "[",
+        print("%d" % self.int())
+      elif self._is_list():
+        print("[")
         if recurse > 0:
-          self.show_all(self.get_list(), ';', recurse-1)
+          self.show_seq(self.get_list(), ';', recurse-1)
         else:
-          print "%d values" % self.get_list_length(),
-        print "]",
+          print("%d values" % self.get_list_length())
+        print("]")
       else:
         t = self.tag()
         if t == 0:
-          print "(",
+          print("(")
           if recurse > 0:
-            self.show_all(self.fields(), ',', recurse-1)
+            self.show_seq(self.fields(), ',', recurse-1)
           else:
-            print "%d fields" % self.size(),
-          print ")",
+            print("%d fields" % self.size_words())
+          print(")")
         elif t == OCamlValue.LAZY_TAG:
           self.show_opaque("lazy")
         elif t == OCamlValue.CLOSURE_TAG:
-          print "Closure(",
+          print("Closure(")
           if recurse > 0:
-            self.show_all(self.fields(), ',', recurse-1, raw=True)
+            self.show_seq(self.fields(), ',', recurse-1, raw=True)
           else:
-            print "%d fields" % self.size(),
-          print ")",
+            print("%d fields" % self.size_words())
+          print(")")
         elif t == OCamlValue.OBJECT_TAG:
 #	| x when x = Obj.object_tag ->
 #		let fields = get_fields [] s in
@@ -864,16 +951,16 @@ class OCamlValue:
         elif t == OCamlValue.FORWARD_TAG:
           self.show_opaque("forward")
         elif t < OCamlValue.NO_SCAN_TAG:
-          print "Tag%d(" % t,
+          print("Tag%d(" % t)
           if recurse > 0:
-            self.show_all(self.fields(), ',', recurse-1)
+            self.show_seq(self.fields(), ',', recurse-1)
           else:
-            print "%d fields" % self.size(),
-          print ")",
+            print("%d fields" % self.size_words())
+          print(")")
         elif t == OCamlValue.STRING_TAG:
-          self.show_string()
+          print("%s" % self._string())
         elif t == OCamlValue.DOUBLE_TAG:
-          print "%f" % self.float(),
+          print("%s" % self._float())
         elif t == OCamlValue.ABSTRACT_TAG:
           self.show_opaque("abstract")
         elif t == OCamlValue.CUSTOM_TAG:
@@ -883,7 +970,7 @@ class OCamlValue:
           except:
             sym = '?'
           try:
-            name = self.field(0).val().cast(self.t_charp.pointer()).dereference().string()
+            name = self.field(0).val().cast(charp.pointer()).dereference().string()
           except:
             name = ''
             raise
@@ -891,12 +978,10 @@ class OCamlValue:
         elif t == OCamlValue.FINAL_TAG:
           self.show_opaque("final")
         elif t == OCamlValue.DOUBLE_ARRAY_TAG:
-          print "<float array>",
+          print("<float array>")
 #        return "[|%s|]" % "; ".join([x.dump() for x in self.fields()])
         else:
-          self.show_opaque("unknown tag %d size %d" % (t,self.size()))
-    except gdb.MemoryError as exn:
-      print '<<gdb.MemoryError : %s>>' % exn,
+          self.show_opaque("unknown hd=0x%X" % self.hd())
 
 #  nil = OCamlValue.of_int(0)
 #  true = OCamlValue.of_int(1)
@@ -925,7 +1010,7 @@ Optional /r flag controls the recursion depth limit."""
   def show_ptr(self, addr, recurse):
     print("*0x%x:" % addr.cast(size_t))
     OCamlValue(addr.dereference()).show(recurse)
-    print ""
+    print("")
 
   # ocaml runtime may be compiled without debug info so we have to be specific with types
   # otherwise gdb may default to 32-bit int even on 64-bit arch and inspection goes loose
@@ -944,7 +1029,7 @@ Optional /r flag controls the recursion depth limit."""
         recurse = int(s)
       args = args[1:]
     if len(args) < 1 or len(args) > 2:
-      print "Wrong usage, see \"help ml_dump\""
+      print("Wrong usage, see \"help ml_dump\"")
       return
     if len(args) == 2:
       addr = self.parse_as_addr(args[0])
@@ -961,7 +1046,7 @@ Optional /r flag controls the recursion depth limit."""
       else:
         addr = self.parse_as_addr(args[0])
         OCamlValue(addr).show(recurse)
-        print ""
+        print("")
 
 DumpOCamlValue()
 
@@ -991,22 +1076,22 @@ Specify "w" or "words" for `units` to use OCaml words rather than bytes"""
       unit = size_t.sizeof
       units = "words"
 
-    print "     major heap size = %d %s" % (self.e("caml_stat_heap_size","intnat") / unit, units)
-    print " major heap top size = %d %s" % (self.e("caml_stat_top_heap_size","intnat") / unit, units)
-    print "   total heap chunks =", self.e("caml_stat_heap_chunks","intnat")
-    print "         gray values = %d %s" % (self.e("gray_vals_size","size_t") * self.size_t.sizeof / unit, units)
-    print "extra heap resources =", self.e("caml_extra_heap_resources","double")
-    print
-    print "minor heap :"
+    print("     major heap size = %d %s" % (self.e("caml_stat_heap_size","intnat") / unit, units))
+    print(" major heap top size = %d %s" % (self.e("caml_stat_top_heap_size","intnat") / unit, units))
+    print("   total heap chunks =", self.e("caml_stat_heap_chunks","intnat"))
+    print("         gray values = %d %s" % (self.e("gray_vals_size","size_t") * size_t.sizeof / unit, units))
+    print("extra heap resources =", self.e("caml_extra_heap_resources","double"))
+    print()
+    print("minor heap :")
     minor_size = self.e("caml_minor_heap_size","size_t")
     minor_base = self.e("caml_young_base","size_t")
     y_start = self.e("caml_young_start","size_t")
     y_ptr = self.e("caml_young_ptr","size_t")
     y_end = self.e("caml_young_end","size_t")
-    print "0x%x .. 0x%x - 0x%x (total %d used %d %s) malloc: 0x%x - 0x%x" % \
-      (y_start, y_ptr, y_end, minor_size/unit, (y_end - y_ptr)/unit, units, minor_base, minor_base + self.malloced_size(minor_size))
-    print
-    print "major heap :"
+    print("0x%x .. 0x%x - 0x%x (total %d used %d %s) malloc: 0x%x - 0x%x" % \
+      (y_start, y_ptr, y_end, minor_size/unit, (y_end - y_ptr)/unit, units, minor_base, minor_base + self.malloced_size(minor_size)))
+    print()
+    print("major heap :")
     # the following casting is needed, otherwise gdb may sign-extend values without debug info
     v = self.e("caml_heap_start","size_t")
     i = 0
@@ -1021,7 +1106,7 @@ Specify "w" or "words" for `units` to use OCaml words rather than bytes"""
       p = p.cast(size_t.pointer())
       block = p.dereference()
       size = (p + 2).dereference()
-      print "%2d) chunk 0x%x - 0x%x (%d %s) malloc: 0x%x - 0x%x" % (i, v, v+size, size/unit, units, block, block+self.malloced_size(size))
+      print("%2d) chunk 0x%x - 0x%x (%d %s) malloc: 0x%x - 0x%x" % (i, v, v+size, size/unit, units, block, block+self.malloced_size(size)))
       i = i + 1
       v = (p + 3).dereference()
 
@@ -1047,7 +1132,7 @@ Optional /r flag controls the recursion depth limit."""
   def show_val(self, addr, recurse):
     print("0x%x = " % addr.cast(size_t))
     OCamlValue(addr).show(recurse)
-    print ""
+    print("")
 
   @TraceAll
   def invoke(self, arg, from_tty):
@@ -1063,7 +1148,7 @@ Optional /r flag controls the recursion depth limit."""
         recurse = int(s)
       args = args[1:]
     if len(args) < 1 or len(args) > 2:
-      print "Wrong usage, see \"help ml_scan\""
+      print("Wrong usage, see \"help ml_scan\"")
       return
     addr = self.parse_as_addr(args[0])
     if len(args) == 2:
@@ -1073,7 +1158,7 @@ Optional /r flag controls the recursion depth limit."""
     while addr < addr_end:
         self.show_val(addr,recurse)
         x = OCamlValue(addr)
-        addr = addr + x.size() + 1
+        addr = addr + x.size_words() + 1
 
 ScanOCamlValue()
 
