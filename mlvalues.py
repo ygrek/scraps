@@ -634,6 +634,14 @@ def init_memoryspace(reload=False):
     traceback.print_exc()
     raise
 
+def resolve(address):
+  """Resolve an address to a symbol (function/variable name)."""
+  symbol = gdb.execute("info symbol 0x%08X" % address.cast(size_t), False, True).split(" ",1)[0]
+  if symbol == "No": # FIXME "No symbol matches"
+    return "0x%08X" % address.cast(size_t)
+  else:
+    return "%s" % symbol
+
 # This class represents gdb.Value as OCaml value.
 # Analogue to stdlib Obj module.
 #
@@ -791,11 +799,8 @@ class OCamlValue:
     return n
 
   def resolve(self):
-    symbol = gdb.execute('info symbol ' + str(self.val()),False,True).split(' ',1)[0]
-    if symbol == "No": # FIXME "No symbol matches"
-      return "0x%x" % self.val()
-    else:
-      return "%s" % symbol
+    """Resolve the block pointer contained in this OCamlValue."""
+    return resolve(self.val())
 
   def show_opaque(self,s):
     print "<%s at 0x%x>" % (s,self.val()),
