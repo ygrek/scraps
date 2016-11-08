@@ -91,6 +91,12 @@
 
 import functools
 import traceback
+import collections
+import bisect
+import struct
+import ctypes
+from enum import Enum
+
 def TraceMemoryError(f):
   """
   Attribute that wraps the function in order to display a traceback
@@ -118,21 +124,515 @@ def TraceAll(f):
   return functools.update_wrapper(wrapper, f)
 
 # gdb.Type's used often throughout the script
-intnat = size_t = charp = doublep = None
+intnat = size_t = charp = doublep = heap_chunk_head_p = None
 
 # do not lookup types at class level cause this script may be run before
 # the inferior image is loaded and gdb can't know sizeof(long) in advance
 def init_types():
-  global intnat, size_t, charp, doublep
+  global intnat, size_t, charp, doublep, heap_chunk_head_p
 
   if doublep is not None:
     return
+
+  try:
+    heap_chunk_head_p = gdb.lookup_type("heap_chunk_head").pointer()
+  except:
+    print("Didn't find 'heap_chunk_head'. Major heap walking is unavailable")
+    pass
 
   intnat = gdb.lookup_type("intnat")
   size_t = gdb.lookup_type("size_t")
   charp = gdb.lookup_type("char").pointer()
   doublep = gdb.lookup_type("double").pointer()
   # keep this one last
+
+class MemoryType(Enum):
+  """
+  Various types of memory we're interested in
+  """
+  General = 0
+  Stack = 1
+  MajorHeap = 2
+  MinorHeap = 3
+  Code = 4
+  StaticData = 5
+  OtherStatic = 6
+  Finalisers = 7
+  GC_Metadata = 8
+  LinuxSpecial = 9
+  Unknown = 10
+
+  Address = 100
+
+  @classmethod
+  def all(cls):
+    return [ cls.General, cls.Stack, cls.MajorHeap, cls.MinorHeap, cls.Code, cls.StaticData, cls.OtherStatic, cls.Finalisers, cls.GC_Metadata, cls.LinuxSpecial, cls.Unknown]
+
+@functools.total_ordering
+class MemoryRange:
+  """
+  A range of memory inside the process' memory address space
+  """
+  def __init__(self, address, size, source, description, memtype=None):
+    """
+    Args:
+      address, size: describe memory range
+      source: where this memory range was defined (e.g. a file, coredump or gdb)
+      description: describes the contents of this memory range
+      memtype: a MemoryType parameter if the contents are known
+               or None otherwise. In this case this class will attempt
+               to deduce the MemoryType from the description, following
+               some standard gdb names
+    """
+    # We might be passed gdb.Value's, so convert them to native int's to reduce memory footprint
+    self.startaddr = int(address)
+    self.size = int(size)
+    self.source = source
+    self.description = description
+    if memtype is None:
+      self.memtype = MemoryRange._determine_memtype(description)
+    else:
+      self.memtype = memtype
+
+  @staticmethod
+  def _determine_memtype(description):
+    """
+    Determine the type of memory from the description
+    This function knows most of the descriptions returned by 'info target' and 'info proc mappings'
+    and will deduce the actual memory type based on that.
+    """
+    if description.startswith('.'):
+      t = description.split()[0]
+      if t in [ ".data", ".bss", ".rodata" ]:
+        return MemoryType.StaticData
+      elif t == ".text":
+        return MemoryType.Code
+      else:
+        return MemoryType.OtherStatic
+    elif description.startswith('['):
+      if description == "[stack]":
+        return MemoryType.Stack
+      elif description in [ "[vdso]", "[vsyscall]", "[vvar]" ]:
+        return MemoryType.LinuxSpecial
+      elif description == "[heap]":
+        return MemoryType.General
+      else:
+        return MemoryType.Unknown
+    elif description.startswith("load"):
+      return MemoryType.General
+    elif "libc" in description:
+      # C library is known to have some odd-named sections
+      return MemoryType.OtherStatic
+    elif description == "text_env":
+      return MemoryType.OtherStatic
+    else:
+      return MemoryType.Unknown
+
+  @staticmethod
+  def from_addr(address):
+    """Create a single-address MemoryRange"""
+    return MemoryRange(address, size_t.sizeof, "MemorySpace.from_addr", "address", MemoryType.Address)
+
+  @staticmethod
+  def part_of(other, start, size):
+    """Create a MemoryRange that spans a chunk of the provided MemoryRange"""
+    return MemoryRange(start, size, other.source, other.description, other.memtype)
+
+  @property
+  def lastaddr(self):
+    """Last valid address in this range"""
+    return self.startaddr + self.size - 1
+
+  @property
+  def endaddr(self):
+    """Post-end address of this range"""
+    return self.startaddr + self.size
+
+  def __contains__(self, address):
+    return self.startaddr <= address < self.endaddr
+
+  def _overlaps(self, other):
+    return self.startaddr <= other.startaddr < self.endaddr \
+        or other.startaddr <= self.startaddr < self.endaddr
+
+  def __eq__(self, other):
+    return isinstance(other, MemoryRange) and self.startaddr == other.startaddr
+
+  def __lt__(self, other):
+    return isinstance(other, MemoryRange) and self.startaddr < other.startaddr
+
+  def settype(self, memtype, description=None):
+    """
+    Override the memory type and, optionally, the description
+    """
+    self.memtype = memtype
+    if description is not None:
+      self.description = description
+
+  def __str__(self):
+    return "0x%08X - 0x%08X is %15s|%s" % (self.startaddr, self.startaddr + self.size, self.memtype.name, self.description)
+
+
+class MemorySpace:
+  """Describes the inferior process' memory address space/layout"""
+  def __init__(self):
+    self.have_accurate_info = True
+    self.populate_ranges()
+    self.annotate_stacks()
+    self.annotate_major_heap()
+    self.annotate_minor_heap()
+    self.annotate_finalisers()
+
+  def set_inaccurate(self, missing):
+    print("Some debug information is missing from the binary: %s . Not all functionality is available" % missing)
+    self.have_accurate_info = False
+
+  def display(self, verbosity):
+    """
+    Pretty print the memory address space with varying verbosity levels:
+      0: only OCaml Stack and Minor/Major Heap areas are displayed
+      1: In addition, static data, code and known GC metadata areas are displayed
+      2: all memory types are displayed
+    """
+    if verbosity == 0:
+      interesting = [ MemoryType.Stack, MemoryType.MinorHeap, MemoryType.MajorHeap ]
+    elif verbosity == 1:
+      interesting = [ MemoryType.Stack, MemoryType.MinorHeap, MemoryType.MajorHeap,
+                      MemoryType.StaticData, MemoryType.Code, MemoryType.GC_Metadata ]
+    else:
+      interesting = MemoryType.all()
+
+    for r in self.ranges:
+      if r.memtype in interesting:
+        print("%s" % str(r))
+
+  def get_range(self, address):
+    """Get the memory range containing the provided address or None otherwise."""
+    index = bisect.bisect(self.ranges, MemoryRange.from_addr(address))
+    if index >= len(self.ranges):
+      return None
+    memrange = self.ranges[index-1]
+    if address in memrange:
+      return memrange
+    return None
+
+  def is_address_of_type(self, address, *memtypes):
+    """Return True of the address is contained in a memory range of one of the provided types"""
+    memrange = self.get_range(address)
+    return memrange is not None and memrange.memtype in memtypes
+
+  def is_on_stack(self, address):
+    """Indicate whether the address is on one of the inferior threads' stack"""
+    return self.is_address_of_type(address, MemoryType.Stack)
+
+  def is_in_heap(self, address):
+    """Indicate whether the address points to data in the OCaml heap"""
+    return self.is_address_of_type(address, MemoryType.MajorHeap, MemoryType.MinorHeap)
+
+  # Beware, on some architectures data is sometimes stored intermingled with code in the .text section
+  # Typically this is after the return instruction from a function
+  def is_valid_data(self, address):
+    """Indicate whether the address points to a memory range known to contain data"""
+    return self.is_address_of_type(address,
+                                   MemoryType.MajorHeap, MemoryType.MinorHeap,
+                                   MemoryType.StaticData, MemoryType.Stack,
+                                   MemoryType.Finalisers)
+
+  def is_code(self, address):
+    """Indicate whether the address points to a memory range containing code"""
+    return self.is_address_of_type(address, MemoryType.Code)
+
+  def search_memory_of_types(self, pattern, *memtypes):
+    """Search all memory of the given types for the provided pattern.
+       The pattern must adhere to the buffer interface, the simplest
+       way to create this is probably struct.pack(...)."""
+    inferior = gdb.selected_inferior()
+    locations = []
+    for memrange in self.ranges:
+      if memrange.memtype not in memtypes:
+        continue
+
+      loc = ctypes.c_void_p(memrange.startaddr).value
+      end = ctypes.c_void_p(memrange.endaddr).value
+      while loc < end:
+        loc = inferior.search_memory(loc, end - loc, pattern)
+        if loc is None or loc == 0:
+          loc = end
+        else:
+          locations.append(loc)
+          loc += size_t.sizeof
+
+    return locations
+
+  # TODO: make this function truncate the existing ranges, rather than delete them
+  # It will allow annotate_split_range to keep return value over multiple splits
+  def split_range_at(self, address):
+    """Split a memory range at the provided address and returns both new ranges."""
+    index = bisect.bisect(self.ranges, MemoryRange.from_addr(address))
+    index -= 1
+    # address is before any existing ranges
+    if index < 0:
+      return None, None
+
+    memrange = self.ranges[index]
+    # address points to the beginning of an existing range
+    if memrange.startaddr == address:
+      previous = None if index == 0 else self.ranges[index-1]
+      return previous, memrange
+
+    # address inside the memory range
+    if address in memrange:
+      first = MemoryRange(memrange.startaddr, address - memrange.startaddr, memrange.source, memrange.description, memrange.memtype)
+      second = MemoryRange(address, memrange.startaddr + memrange.size - address, memrange.source, memrange.description, memrange.memtype)
+
+      del self.ranges[index]
+      bisect.insort(self.ranges, first)
+      bisect.insort(self.ranges, second)
+      return first, second
+
+    # address (right) after the memory range and not contained by another memory range
+    previous = memrange if address == memrange.endaddr else None
+    return previous, None
+
+  def tentative_add_range(self, memrange):
+    """Add a memory range, leaving any existing overlaps untouched, yet filling holes where necessary"""
+    # optimize the easy case. makes rest of code simpler
+    if not len(self.ranges):
+      bisect.insort(self.ranges, memrange)
+      return
+
+    probeaddr = memrange.startaddr
+    while probeaddr < memrange.endaddr:
+      index = bisect.bisect(self.ranges, MemoryRange.from_addr(probeaddr))
+
+      # before first
+      if index == 0:
+        nxt = self.ranges[index]
+        lastaddr = nxt.startaddr
+        bisect.insort(self.ranges, MemoryRange.part_of(memrange, probeaddr, lastaddr - probeaddr))
+        probeaddr = nxt.endaddr
+        continue
+
+      # after last
+      if index >= len(self.ranges):
+        prev = self.ranges[index-1]
+        startaddr = prev.endaddr
+        if startaddr <= probeaddr:
+          bisect.insort(self.ranges, MemoryRange.part_of(memrange, probeaddr, memrange.endaddr - probeaddr))
+          probeaddr = memrange.endaddr
+        else:
+          probeaddr = startaddr
+        continue
+
+      # in between 2
+      prev = self.ranges[index-1]
+      if probeaddr in prev:
+        probeaddr = prev.endaddr
+        continue
+
+      nxt = self.ranges[index]
+      if nxt.startaddr in memrange:
+        bisect.insort(self.ranges, MemoryRange.part_of(memrange, probeaddr, nxt.startaddr - probeaddr))
+        probeaddr = nxt.endaddr
+      else:
+        bisect.insort(self.ranges, MemoryRange.part_of(memrange, probeaddr, memrange.endaddr - probeaddr))
+        probeaddr = memrange.endaddr
+
+  def annotate_split_range(self, address, size, memtype, description):
+    """Annotate an existing range (or part thereof) as the specified MemoryType, splitting the range where necessary"""
+    _, _ = self.split_range_at(address) # do not keep return values, following call may delete it from self.ranges
+    end, _ = self.split_range_at(address+size)
+    begin = self.get_range(address)
+
+    begin.settype(memtype, description)
+    if end != begin:
+      print("Annotating '%s' over 2 separate ranges: %s and %s" % (description, str(begin), str(end)))
+      # TODO: merge the two
+      end.settype(memtype, description)
+
+  def populate_ranges(self,):
+    """Populate the memory ranges from coredump info or live gdb information"""
+    self.ranges = list()
+    # coredump: info target shows all sections in full detail
+    # live debug: only file-backed sections are shown
+    targetinfo = gdb.execute("info target", False, True)
+    for line in targetinfo.splitlines():
+      line = line.strip()
+      if line.startswith('`'):
+        line = line.split("'")[1]
+        source = line[1:]
+        continue
+      if not line.startswith("0x"):
+        continue
+
+      start, dash, end, str_is, memtype = line.split(maxsplit=4)
+      assert(dash == '-' and str_is == 'is')
+      start = int(start, 16)
+      end = int(end, 16)
+      new_range = MemoryRange(start, end-start, source, memtype)
+      startoverlap = self.get_range(start)
+      endoverlap = self.get_range(end)
+
+      if endoverlap == startoverlap:
+        endoverlap = None
+
+      #TODO: splitup and punch holes/replace
+      if memtype.startswith('.'):
+        # gdb reports loadXXX sections on top of file-backed sections of the binary
+        # probably because the kernel maps writeable pages on top of them
+        # Therefore, keep the more accurate description from the file-backed section
+        if startoverlap is not None and startoverlap.memtype == MemoryType.General:
+          previous, current = self.split_range_at(start)
+          self.ranges.remove(current)
+          startoverlap = None
+        if endoverlap is not None and endoverlap.memtype == MemoryType.General:
+          current, end = self.split_range_at(end)
+          self.ranges.remove(current)
+          endoverlap = None
+
+      if startoverlap is not None and endoverlap is not None:
+        print("Overlapping memory ranges: %s in %s -> %s" %
+            (new_range, str(startoverlap), str(endoverlap)))
+      bisect.insort(self.ranges, new_range)
+
+    # live target: run-time allocated memory and some file-backed sections
+    # There typically is overlap with the 'info target' output, so give precedence
+    # to the previously added ranges
+    mappinginfo = gdb.execute("info proc mappings", False, True)
+    for line in mappinginfo.splitlines():
+      line = line.strip()
+      if not line.startswith("0x"):
+        continue
+
+      items = line.split()
+      if len(items) == 4:
+        start, end, size, offset = items
+        source = "unknown"
+      elif len(items) == 5:
+        start, end, size, offset, source = items
+      else:
+        print("Unexpected line when parsing 'info proc mappings': %s" % line)
+        continue
+
+      start = int(start, 16)
+      size = int(size, 16)
+      end = int(end, 16)
+
+      new_range = MemoryRange(start, size, source, source)
+      self.tentative_add_range(new_range)
+
+  def annotate_stacks(self):
+    """
+    Mark all memoryranges containing thread stacks as such.
+    We do this by taking the stack pointer of each thread
+    and marking the target address' memory range.
+    There typically are guard pages around stacks, they will
+    not be marked as stack.
+    """
+    curthread = gdb.selected_thread()
+    try:
+      for thread in gdb.selected_inferior().threads():
+        thread.switch()
+
+        # This is different depending on gdb version
+        try:
+          frame = gdb.newest_frame()
+          stackpointer = frame.read_register("sp")
+        except:
+          regname, as_hex, as_int = gdb.execute("info register sp", False, True).split()
+          stackpointer = int(as_hex, 16)
+        memrange = self.get_range(stackpointer)
+        tid = thread.ptid[1] if thread.ptid[1] else thread.ptid[2]
+        if memrange is None:
+          print("Did not find stack of thread %d" % tid)
+          continue
+        memrange.settype(MemoryType.Stack, "Stack of thread %d(TID %d)" % (thread.num, tid))
+    finally:
+      curthread.switch()
+
+  def annotate_major_heap(self):
+    """
+    Mark all memory ranges containing OCaml stack as such.
+    Memory ranges are split when needed to avoid marking padding as actual heap.
+    """
+    # TODO: we could provide a fallback path by manually taking the proper bytes as
+    # the ml_heap command does
+    if heap_chunk_head_p is None:
+      self.set_inaccurate("major heap info")
+      return
+
+    heap_chunk_ptr = gdb.parse_and_eval("caml_heap_start").cast(heap_chunk_head_p)
+    try:
+      while heap_chunk_ptr != 0:
+        heap_chunk_head_ptr = heap_chunk_ptr - 1
+        heap_chunk_head = heap_chunk_head_ptr.dereference()
+
+        block = heap_chunk_head["block"]
+        size = heap_chunk_head["size"]
+
+        memrange = self.get_range(heap_chunk_head_ptr)
+        if memrange is not None:
+          self.annotate_split_range(heap_chunk_ptr.cast(size_t), size, MemoryType.MajorHeap, "Major heap")
+        else:
+          new_range = MemoryRange(heap_chunk_ptr.cast(size_t), size, "gdb", "Major Heap", MemoryType.MajorHeap)
+          assert(false) # This shouldn't happen
+          self.tentative_add_range(new_range)
+
+        heap_chunk_ptr = heap_chunk_head["next"].cast(heap_chunk_head_p)
+    except gdb.MemoryError:
+      print("OCaml major heap linked list is corrupt: last entry = 0x%08X" % (heap_chunk_ptr.cast(size_t)))
+
+    gray_vals = gdb.parse_and_eval("gray_vals").cast(size_t)
+    gray_vals_cur = gdb.parse_and_eval("gray_vals_cur").cast(size_t)
+    gray_vals_size = gdb.parse_and_eval("gray_vals_size").cast(size_t)
+    gray_vals_end = gdb.parse_and_eval("gray_vals_end").cast(size_t)
+    self.annotate_split_range(gray_vals, gray_vals_size, MemoryType.GC_Metadata, "major GC's gray values")
+    self.annotate_split_range(gray_vals_cur, gray_vals_end - gray_vals_cur, MemoryType.GC_Metadata, "major GC's current gray values")
+
+  def annotate_minor_heap(self):
+    """
+    Mark the minor heap memory range as such.
+    """
+    minor_start = gdb.parse_and_eval("caml_young_base").cast(size_t)
+    minor_size = gdb.parse_and_eval("caml_young_end").cast(size_t) - minor_start
+
+    memrange = self.get_range(minor_start)
+    if memrange is not None:
+      self.annotate_split_range(minor_start, minor_size, MemoryType.MinorHeap, "Minor heap")
+    else:
+      new_range = MemoryRange(minor_start, minor_size, "gdb", "Minor Heap", MemoryType.MinorHeap)
+      self.set_inaccurate("minor heap memory map info")
+      bisect.insort(self.ranges, new_range)
+
+  def annotate_finalisers(self):
+    """
+    Mark the table of finalisers as such.
+    """
+    table = gdb.parse_and_eval("final_table").cast(size_t)
+    try:
+      size = gdb.parse_and_eval("'finalise.d.c'::size").cast(size_t)
+    except gdb.error:
+      try:
+        size = gdb.parse_and_eval("'finalise.c'::size").cast(size_t)
+      except:
+        self.set_inaccurate("finalisers")
+        return
+    if table != 0 and size != 0:
+      self.annotate_split_range(table, size, MemoryType.Finalisers, "Finalisers table")
+
+memoryspace = None
+
+def init_memoryspace(reload=False):
+  """Load memory space information from the inferior process."""
+  global memoryspace
+  if memoryspace is not None and not reload:
+    return
+
+  try:
+    memoryspace = MemorySpace()
+  except:
+    traceback.print_exc()
+    raise
 
 # This class represents gdb.Value as OCaml value.
 # Analogue to stdlib Obj module.
@@ -428,6 +928,7 @@ Optional /r flag controls the recursion depth limit."""
   @TraceAll
   def invoke(self, arg, from_tty):
     init_types()
+    init_memoryspace()
     args = gdb.string_to_argv(arg)
     recurse = 1
     if len(args) > 0 and args[0].startswith("/r"):
@@ -477,6 +978,7 @@ Specify "w" or "words" for `units` to use OCaml words rather than bytes"""
   @TraceAll
   def invoke(self, arg, from_tty):
     init_types()
+    init_memoryspace()
     args = gdb.string_to_argv(arg)
     units = "bytes"
     unit = 1
@@ -545,6 +1047,7 @@ Optional /r flag controls the recursion depth limit."""
   @TraceAll
   def invoke(self, arg, from_tty):
     init_types()
+    init_memoryspace()
     args = gdb.string_to_argv(arg)
     recurse = 1
     if len(args) > 0 and args[0].startswith("/r"):
