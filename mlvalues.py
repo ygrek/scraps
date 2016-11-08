@@ -902,6 +902,332 @@ class OCamlValue:
       else:
         x.show(recurse)
 
+  # Verbosity:
+  # Error information is always shown
+  # 0: Print type of the OCamlValue
+  # 1: Print type and value of the OCamlValue, only displays number of items for sequence types
+  # 2: Print type and value of the OCamlValue, display full contents of not to long,
+  #    otherwise same as 1
+  # Each of the following functions interprets the OCamlValue per the function name
+  # and displays the value according to the given verbosity.
+  #
+  # The functions get all of their input through function arguments
+  # to avoid excessive fetching through gdb.Value and duplicating parsing logic.
+
+  def _stringify_int(self, value, verbosity):
+    if verbosity == 0:
+      return "Integer"
+    else:
+      return "Integer(%d/0x%08X)" % (value, value)
+
+  def _stringify_invalid_block(self, pointer, reason, verbosity):
+    if verbosity == 0:
+      return "Invalid block(%s)" % reason
+    else:
+      return "Invalid block(%s, v=0x%08X)" % (reason, pointer)
+
+  def _stringify_invalid_size(self, pointer, size, item, verbosity):
+    if verbosity == 0:
+      return "Invalid size %s"
+    else:
+      return "Invalid size %s(v=0x%08X, size=%d)" % (item, self.v, self.size_words())
+
+  def _stringify_generic(self, prefix, fields, verbosity):
+    size = len(fields)
+    if verbosity == 0:
+      return prefix
+    elif verbosity >= 2 and size <= 8:
+      return "%s [%s]" % (prefix, ', '.join(["0x%08X"%f.v for f in fields]))
+    else:
+      return "%s (%d items)" % (prefix, size)
+
+  def _stringify_value(self, fields, verbosity):
+    return self._stringify_generic("Array/Tuple/Record/List entry", fields, verbosity)
+
+  def _stringify_lazy_value(self, pointer, verbosity):
+    if verbosity == 0:
+      return "Lazy value"
+    else:
+      return "Lazy value (0x%08X)" % pointer
+
+  def _stringify_lazy_result(self, fields, verbosity):
+    return self._stringify_generic("Lazy result", fields, verbosity)
+
+  def _stringify_invalid_object(self, classval, objectid, reason, verbosity):
+    if verbosity == 0:
+      return "Object with %s" % reason
+    else:
+      return "Object with %s (cls=0x%08X, oid=0x%08X)" % (reason, classval, objectid)
+
+  def _stringify_object(self, classval, objectid, fields, verbosity):
+    size = len(fields)
+    if verbosity == 0:
+      return "Object"
+    elif verbosity >= 2 and size <= 8:
+      return "Object (cls=0x%08X, oid=%d) [%s]" % (classval, objectid,
+          ', '.join(["0x%08X"%f.v for f in self.fields()[2:]]))
+    else:
+      return "Object (cls=0x%08X, oid=%d) [%d members]" % (classval, objectid, size)
+
+  def _stringify_empty_closure(self, fields, verbosity):
+    if verbosity == 0:
+      return "Empty closure"
+
+    size = len(fields)
+    if verbosity > 2 or (verbosity == 2 and size <= 8):
+      return "Empty closure (%s)" % ', '.join(["0x%08X"%f.v for f in fields])
+    else:
+      return "Empty closure (%d items)" % size
+
+  def _stringify_closure(self, functions, fields, verbosity):
+    prefix = "Infixed closure" if len(functions) > 1 else "Closure"
+
+    if verbosity == 0:
+      return prefix
+
+    funcnames = []
+    for (function, real_function) in functions:
+      if real_function != function:
+        funcnames.append("%s via %s" % (real_function, function))
+      else:
+        funcnames.append(function)
+
+    targets = ", ".join(funcnames)
+
+    size = len(fields)
+    if verbosity > 2 or (verbosity == 2 and size <= 8):
+      return "%s to %s(%s)" % (prefix, targets,
+          ', '.join(["0x%08X"%f.v for f in fields]))
+    else:
+      return "%s to %s(%d)" % (prefix, targets, size)
+
+  def _stringify_closure_arity_mismatch(self, function, arity, size, reason, verbosity):
+    if verbosity == 0:
+      return "Closure with %s" % reason
+    else:
+      return "Closure to %s with %s(arity=0x%08X, size=%d)" % (function, reason, arity, size)
+
+  def _stringify_string(self, string, verbosity):
+    size = len(string)
+    if verbosity == 0:
+      return "String"
+    elif (verbosity == 2 and size < 64) or verbosity > 2:
+      return "String '%s'" % string
+    else:
+      return "String '%s...%d total'" % (string[:48], size)
+
+  def _stringify_double(self, value, verbosity):
+    if verbosity == 0:
+      return "Double"
+    else:
+      return "Double: %f" % value
+
+  def _stringify_structured_block(self, fields, verbosity):
+    size = len(fields)
+    if verbosity == 0:
+      return "Structured block"
+    elif verbosity >= 2 and size < 8:
+      return "Structured block [%s]" % ', '.join(["0x%08X"%f.v for f in fields])
+    else:
+      return "Structured block [%d total]" % size
+
+  @TraceMemoryError
+  def try_parse(self, verbosity=0):
+    #print("Trying to validate: 0x%X" % self.v)
+    if self.v == 0:
+      # TODO: within some sections NULL pointers are expected, e.g. global_data
+      return False, "NULL pointer", []
+    if self.is_int():
+      return True, self._stringify_int(self.int(), verbosity), []
+
+    # It's a block...
+
+    if (self.v & (intnat.sizeof-1)) != 0:
+      return False, self._stringify_invalid_block(int(self.v), "Unaligned pointer", verbosity), []
+
+    ptr = self.v.cast(intnat.pointer())
+    hd = self.hd()
+    if hd is None:
+      return False, self._stringify_invalid_block(int(self.v), "Out-of-bounds header", verbosity), []
+    if try_dereference(ptr) is None:
+      return False, self._stringify_invalid_block(int(self.v), "Out-of-bounds pointer", verbosity), []
+
+    if memoryspace.have_accurate_info and not memoryspace.is_valid_data(self.v):
+      memrange = memoryspace.get_range(self.v)
+      return False, "Value (0x%08X) not in data memory: %s (%s)" % (self.v, str(memrange), self.resolve()), []
+
+    word_size = self.size_words()
+    if self._unsafe_field(word_size - 1) is None:
+      return False, self._stringify_invalid_size(int(self.v), word_size, "of unknown type", verbosity), []
+
+    # TODO: there's a limit to block sizes allocated on the minor heap
+    if verbosity >= 2 and word_size > 1024*1024:
+      print("Warning: v=0x%08X is greater than 1MiB: %d"%(self.v, word_size))
+
+    # Pointers and size look acceptable
+
+    tag = self.tag()
+    # These if/elif conditions are ordered according to expected prevalence for performance
+    # TODO: recognize and print lists properly. Now they will be printed as nested structures.
+    if tag == OCamlValue.VALUE_TAG:
+      fields = self.fields()
+      return True, self._stringify_value(fields, verbosity), fields
+
+    elif tag == OCamlValue.STRING_TAG:
+      byte_size = self.size_bytes()
+      padsize_byte = (self.v + byte_size - 1).cast(charp)
+      padsize = padsize_byte.dereference()
+      if padsize > intnat.sizeof:
+        return False, "String with invalid padding byte: %d" % padsize, []
+
+      real_len = byte_size - 1 - padsize
+      trailing_nul = (self.v + real_len).cast(charp).dereference()
+      if trailing_nul != 0:
+        return False, "String without trailing NUL: %d" % trailing_nul, []
+
+      string = self.v.cast(charp).string('latin1', 'ignore', real_len)
+      return True, self._stringify_string(string, verbosity), []
+
+    elif tag == OCamlValue.DOUBLE_TAG:
+      if self.size_bytes() != doublep.target().sizeof:
+        return False, self._stringify_invalid_size(int(self.v), size, "double", verbosity), []
+
+      value = self.v.cast(doublep).dereference()
+      return True, self._stringify_double(value, verbosity), []
+
+    elif tag == OCamlValue.OBJECT_TAG:
+      if word_size < 2:
+        return False, self._stringify_invalid_size(int(self.v), word_size, "of object", verbosity), []
+
+      classval = self.field(0)
+      objectid = self.field(1)
+      if classval.is_int():
+        return False, self._stringify_invalid_object(classval.val(), objectid.val(), "invalid class id"), []
+
+      if not objectid.is_int():
+        return False, self._stringify_invalid_object(classval.val(), objectid.val(), "invalid object id"), []
+
+      # Beware: objectid was passed raw above, but is passed as integer below
+      fields = self.fields()[2:]
+      return True, self._stringify_object(classval.val(), objectid.int(), fields, verbosity), fields
+
+    elif tag == OCamlValue.CLOSURE_TAG:
+      # The simplest closure contains 2 words:
+      # function pointer | arity of the function
+      # If data from the environment is added, it just comes after the arity.
+      #
+      # Some closures are special:
+      # caml_curryX (partial function application) and caml_tuplifyX (let add (a,b) = ...)
+      # These functions are generated by the compiler when needed and closures look like:
+      # function pointer of caml_curryX | arity | function pointer of target function
+      # function pointer of caml_tuplifyX | -arity | function pointer of target function
+      # According to some documentation, there is also caml_apply and other forms of
+      # caml_curryX_app that haven't been properly handled here yet.
+      #
+      # (See also documentation of the tag == OCamlValue.INFIX_TAG below)
+      # When a closure contains infix tags, it's pretty hard to distinguish between that
+      # and a standard closure containing an integer value that looks like an infix tag.
+      # Therefore we use the simple heuristic that if we find something that looks like
+      # an infix tag followed by a pointer to a code section, we treat it as an infix tag
+      # and continue parsing the closure.
+      if word_size < 2:
+        return False, self._stringify_invalid_size(int(self.v), word_size, "closure", verbosity), []
+
+      offset = 0
+      fields = self.fields()
+      functions = []
+      have_more = True
+      tempfunc = fields[0].val()
+      while have_more:
+        function = fields[0].resolve()
+        arity = fields[1]
+        if not arity.is_int():
+          return False, self._stringify_closure_arity_mismatch(function, int(arity.v), word_size, "non-integer arity", verbosity), []
+        arity = arity.int()
+
+        if abs(arity) < 1:
+          return False, self._stringify_closure_arity_mismatch(function, arity, word_size, "arity to small", verbosity), []
+
+        if function.startswith("caml_curry"):
+          skip_fields = 3
+          real_function = fields[2].resolve()
+
+        elif function.startswith("caml_tuplify"):
+          arity = -arity
+          real_function = fields[2].resolve()
+          skip_fields = 3
+
+        else:
+          skip_fields = 2
+          real_function = function
+
+        functions.append( (function, real_function) )
+
+        if len(fields) >= skip_fields + 2 \
+          and (fields[skip_fields].val() & 0xFF) == OCamlValue.INFIX_TAG \
+          and memoryspace.is_code(fields[skip_fields + 1].val()):
+
+          infix_offset = (fields[skip_fields].val() >> 10)
+          if infix_offset != offset + skip_fields + 1:
+            return False, "Closure with incorrect infix size", []
+          skip_fields += 1
+        else:
+          have_more = False
+
+        offset += skip_fields
+        fields = fields[skip_fields:]
+
+      if len(functions) == 0:
+        return False, self._stringify_empty_closure(fields, verbosity), []
+      return True, self._stringify_closure(functions, fields, verbosity), fields
+
+    elif tag == OCamlValue.LAZY_TAG:
+      # This is the actual lazy value. When it is evaluated, the tag changes to either whatever
+      # fit the result (probably if it fits in this OCamlValue) or into a FORWARD_TAG otherwise
+      # with the field pointing to block containing the result.
+      if word_size != 1:
+        return False, self._stringify_invalid_size(int(self.v), word_size, "lazy value", verbosity), []
+
+      # TODO: fields of the lazy value?
+      return True, self._stringify_lazy_value(int(self.v), verbosity), self.fields()
+
+    elif tag == OCamlValue.FORWARD_TAG:
+      # This is used for forwarding to the OCamlValue containing the result of a lazy evaluation
+      if word_size == 0:
+        return False, self._stringify_invalid_size(int(self.v), word_size, "lazy result", verbosity), []
+
+      fields = self.fields()
+      return True, self._stringify_lazy_result(fields, verbosity), fields
+
+    elif tag == OCamlValue.INFIX_TAG:
+      # "let rec a x = ... and b y = ..." creates a closure with infixes:
+      # closure header | (a) closure data (1 or more words) | infix tag | (b) closure data (1 or more words)
+      # OCamlValue for a points to (a) and b points to (b)
+      # The size of the infix tag is the offset in words of (b) with respect to (a)
+      # For parsing, we just forward to the encapsulating closure
+      closure_offset = self.size_words()
+      return OCamlValue(self.v - (closure_offset*size_t.sizeof)).try_parse(verbosity)
+
+    elif tag == OCamlValue.ABSTRACT_TAG:
+      # TODO: validate more?
+      return True, "Abstract %d" % word_size, []
+
+    elif tag == OCamlValue.CUSTOM_TAG:
+      # Custom values are used for things like Int64, Int32 and more. They haven't had
+      # special treatment here yet. See the show() method for some more info.
+      # TODO: validate more
+      return True, "Custom %d" % word_size, []
+
+    elif tag == OCamlValue.DOUBLE_ARRAY_TAG:
+      if (size_bytes % (doublep.target().sizeof)) != 0:
+        return False, self._stringify_invalid_size(int(self.v), size, "double array"), []
+      # TODO: print actual values
+      return True, "Double array", []
+
+    else:
+      fields = self.fields()
+      return True, self._stringify_structured_block(fields, verbosity), fields
+
   @TraceMemoryError
   def show(self,recurse):
       if self.v == 0:
