@@ -117,6 +117,22 @@ def TraceAll(f):
       raise
   return functools.update_wrapper(wrapper, f)
 
+# gdb.Type's used often throughout the script
+intnat = size_t = charp = doublep = None
+
+# do not lookup types at class level cause this script may be run before
+# the inferior image is loaded and gdb can't know sizeof(long) in advance
+def init_types():
+  global intnat, size_t, charp, doublep
+
+  if doublep is not None:
+    return
+
+  intnat = gdb.lookup_type("intnat")
+  size_t = gdb.lookup_type("size_t")
+  charp = gdb.lookup_type("char").pointer()
+  doublep = gdb.lookup_type("double").pointer()
+  # keep this one last
 
 # This class represents gdb.Value as OCaml value.
 # Analogue to stdlib Obj module.
@@ -397,12 +413,12 @@ Optional /r flag controls the recursion depth limit."""
   def parse_as_addr(self,addr):
     x = gdb.parse_and_eval(addr)
     if x.address == None:
-      return x.cast(self.size_t.pointer())
+      return x.cast(size_t.pointer())
     else: # l-value, prevent short read when no debugging info
-      return gdb.parse_and_eval("*((size_t*)&"+addr+")").cast(self.size_t.pointer())
+      return gdb.parse_and_eval("*((size_t*)&"+addr+")").cast(size_t.pointer())
 
   def show_ptr(self, addr, recurse):
-    print "*0x%x:" % addr.cast(self.size_t),
+    print("*0x%x:" % addr.cast(size_t))
     OCamlValue(addr.dereference()).show(recurse)
     print ""
 
@@ -411,7 +427,7 @@ Optional /r flag controls the recursion depth limit."""
   # NB values can be given by name or by address
   @TraceAll
   def invoke(self, arg, from_tty):
-    self.size_t = gdb.lookup_type("size_t")
+    init_types()
     args = gdb.string_to_argv(arg)
     recurse = 1
     if len(args) > 0 and args[0].startswith("/r"):
@@ -432,7 +448,7 @@ Optional /r flag controls the recursion depth limit."""
       if args[0] == "local_roots":
         p = gdb.parse_and_eval("*(struct caml__roots_block**)&caml_local_roots")
         while p != 0:
-          print "caml_frame 0x%x" % p.cast(self.size_t)
+          print("caml_frame 0x%x" % p.cast(size_t))
           for i in range(int(p['nitems'])):
             self.show_ptr(p['tables'][i], recurse)
           p = p['next']
@@ -456,16 +472,16 @@ Specify "w" or "words" for `units` to use OCaml words rather than bytes"""
 
   def malloced_size(self,x):
     # see caml_aligned_malloc, FIXME Page_size = 4K assumption
-    return x + 4*self.size_t.sizeof + 4*1024
+    return x + 4*size_t.sizeof + 4*1024
 
   @TraceAll
   def invoke(self, arg, from_tty):
-    self.size_t = gdb.lookup_type("size_t")
+    init_types()
     args = gdb.string_to_argv(arg)
     units = "bytes"
     unit = 1
     if len(args) > 0 and (args[0] == "words" or args[0] == "w"):
-      unit = self.size_t.sizeof
+      unit = size_t.sizeof
       units = "words"
 
     print "     major heap size = %d %s" % (self.e("caml_stat_heap_size","intnat") / unit, units)
@@ -488,14 +504,14 @@ Specify "w" or "words" for `units` to use OCaml words rather than bytes"""
     v = self.e("caml_heap_start","size_t")
     i = 0
     while v != 0:
-      p = gdb.Value(v - 4 * self.size_t.sizeof)
+      p = gdb.Value(v - 4 * size_t.sizeof)
 # typedef struct {
 #   void *block;           /* address of the malloced block this chunk live in */
 #   asize_t alloc;         /* in bytes, used for compaction */
 #   asize_t size;          /* in bytes */
 #   char *next;
 # } heap_chunk_head;
-      p = p.cast(self.size_t.pointer())
+      p = p.cast(size_t.pointer())
       block = p.dereference()
       size = (p + 2).dereference()
       print "%2d) chunk 0x%x - 0x%x (%d %s) malloc: 0x%x - 0x%x" % (i, v, v+size, size/unit, units, block, block+self.malloced_size(size))
@@ -517,18 +533,18 @@ Optional /r flag controls the recursion depth limit."""
   def parse_as_addr(self,addr):
     x = gdb.parse_and_eval(addr)
     if x.address == None:
-      return x.cast(self.size_t.pointer())
+      return x.cast(size_t.pointer())
     else: # l-value, prevent short read when no debugging info
-      return gdb.parse_and_eval("*((size_t*)&"+addr+")").cast(self.size_t.pointer())
+      return gdb.parse_and_eval("*((size_t*)&"+addr+")").cast(size_t.pointer())
 
   def show_val(self, addr, recurse):
-    print "0x%x = " % addr.cast(self.size_t),
+    print("0x%x = " % addr.cast(size_t))
     OCamlValue(addr).show(recurse)
     print ""
 
   @TraceAll
   def invoke(self, arg, from_tty):
-    self.size_t = gdb.lookup_type("size_t")
+    init_types()
     args = gdb.string_to_argv(arg)
     recurse = 1
     if len(args) > 0 and args[0].startswith("/r"):
@@ -543,7 +559,7 @@ Optional /r flag controls the recursion depth limit."""
       return
     addr = self.parse_as_addr(args[0])
     if len(args) == 2:
-        addr_end = addr + int(args[1]) / self.size_t.sizeof
+        addr_end = addr + int(args[1]) / size_t.sizeof
     else:
         addr_end = addr + 64
     while addr < addr_end:
