@@ -1778,6 +1778,100 @@ def get_entry_points():
   traverse_scan_roots_hook()
   return ret
 
+class ValidateHeap(gdb.Command):
+  """Validates the OCaml heap
+     ml_validate
+  """
+  def __init__(self):
+    gdb.Command.__init__(self, "ml_validate", gdb.COMMAND_DATA, gdb.COMPLETE_SYMBOL, False)
+
+  def parse_as_addr(self,addr):
+    x = gdb.parse_and_eval(addr)
+    if x.address == None:
+      return x.cast(size_t.pointer())
+    else: # l-value, prevent short read when no debugging info
+      return gdb.parse_and_eval("*((size_t*)&"+addr+")").cast(size_t.pointer())
+
+  def _scan_range(self, todo, seen):
+    values = 0
+    bytes = 0
+    skipped = 0
+
+    try:
+      while len(todo):
+        value = todo.pop()
+
+        if value in seen:
+          skipped += 1
+          continue
+        seen.add(int(value.val()))
+
+
+        valid, what, children = value.try_parse(3)
+        if not valid:
+          print("Invalid value at %s: %s" % (str(value), what))
+          p = value.parent
+          pindex = value.parentindex
+          while p is not None:
+            if isinstance(p, OCamlValue):
+              _, p_what, _ = p.try_parse(3)
+              print("from: 0x%08X[%d] - %s" % (p.val(), pindex, p_what))
+              pindex = p.parentindex
+              p = p.parent
+            else:
+              print("from: %s[%d]" % (str(p), pindex))
+              p = None
+              pindex = None
+        elif len(children):
+          todo.extend([child for child in children if int(child.val()) not in seen])
+
+        if valid:
+          values += 1
+          bytes += 0 if value.is_int() else value.size_bytes()
+    except:
+      traceback.print_exc()
+      raise
+
+    return (values, skipped, bytes)
+
+  @TraceAll
+  def invoke(self, arg, from_tty):
+    init_types()
+    init_memoryspace()
+    args = gdb.string_to_argv(arg)
+
+    if len(args) > 0:
+      print("Wrong usage, see \"help ml_validate\"")
+      return
+
+    values = skipped = bytes = 0
+
+    try:
+      todo = collections.deque()
+      seen = set()
+
+      for (begin, end, source) in get_entry_points():
+        #print("Scanning %s - %d values" % (source, (end - begin)/size_t.sizeof))
+
+        address = begin
+        while address < end:
+          todo.append(OCamlValue(address, parent=source, parentindex=(address - begin)/size_t.sizeof))
+          address = address + size_t.sizeof
+
+        cur_values, cur_skipped, cur_bytes = self._scan_range(todo, seen)
+        #print("Scanned %d values, skipped %d values, total of %5dB" % (cur_values, cur_skipped, cur_bytes))
+        values += cur_values
+        skipped += cur_skipped
+        bytes += cur_bytes
+
+    except:
+      traceback.print_exc()
+      raise
+
+    print("Totals: scanned %d values, skipped %d values, total of %5dB" % (values, skipped, bytes))
+
+ValidateHeap()
+
 class ShowMemory(gdb.Command):
   """
   Shows memory space and its disposition
