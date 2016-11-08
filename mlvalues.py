@@ -1122,3 +1122,28 @@ class ShowMemory(gdb.Command):
 
 ShowMemory()
 
+class FindPointersTo(gdb.Command):
+  """Finds memory locations that point to a specified value:
+     ml_find <value>
+  """
+  def __init__(self):
+    gdb.Command.__init__(self, "ml_find", gdb.COMMAND_DATA, gdb.COMPLETE_SYMBOL, False)
+
+  @TraceAll
+  def invoke(self, arg, from_tty):
+    init_types()
+    init_memoryspace()
+    args = gdb.string_to_argv(arg)
+
+    if len(args) != 1:
+      print("Wrong usage, see \"help ml_find\"")
+      return
+
+    value = int(args[0])
+    pattern = struct.pack("L", value)
+    locations = memoryspace.search_memory_of_types(pattern, *MemoryType.all())
+    for location in locations:
+      memrange = memoryspace.get_range(location)
+      print("Found at 0x%08X in %s" % (location, memrange.description))
+
+FindPointersTo()
