@@ -3,6 +3,7 @@
 #
 # https://github.com/ygrek/scraps/blob/master/mlvalues.py
 # (c) 2011 ygrek
+# (c) 2016 Amplidata, a HGST company.
 #
 # Licensed under the terms of BSD 3-clause
 #
@@ -87,6 +88,34 @@
 #
 # 2011-12-24
 #   Initial
+
+import functools
+import traceback
+def TraceMemoryError(f):
+  """
+  Attribute that wraps the function in order to display a traceback
+  when accessing invalid memory
+  """
+  def wrapper(*args, **kwargs):
+    try:
+      return f(*args, **kwargs)
+    except gdb.MemoryError as me:
+      print("Function %s attempted to access invalid memory" % f.__name__)
+      traceback.print_exc()
+      raise
+  return functools.update_wrapper(wrapper, f)
+
+def TraceAll(f):
+  """
+  Attribute that wraps the function in order to display a traceback
+  """
+  def wrapper(*args, **kwargs):
+    try:
+      return f(*args, **kwargs)
+    except:
+      traceback.print_exc()
+      raise
+  return functools.update_wrapper(wrapper, f)
 
 
 # This class represents gdb.Value as OCaml value.
@@ -264,6 +293,7 @@ class OCamlValue:
       else:
         x.show(recurse)
 
+  @TraceMemoryError
   def show(self,recurse):
     try:
       if self.v == 0:
@@ -379,6 +409,7 @@ Optional /r flag controls the recursion depth limit."""
   # ocaml runtime may be compiled without debug info so we have to be specific with types
   # otherwise gdb may default to 32-bit int even on 64-bit arch and inspection goes loose
   # NB values can be given by name or by address
+  @TraceAll
   def invoke(self, arg, from_tty):
     self.size_t = gdb.lookup_type("size_t")
     args = gdb.string_to_argv(arg)
@@ -427,6 +458,7 @@ Specify "w" or "words" for `units` to use OCaml words rather than bytes"""
     # see caml_aligned_malloc, FIXME Page_size = 4K assumption
     return x + 4*self.size_t.sizeof + 4*1024
 
+  @TraceAll
   def invoke(self, arg, from_tty):
     self.size_t = gdb.lookup_type("size_t")
     args = gdb.string_to_argv(arg)
@@ -494,6 +526,7 @@ Optional /r flag controls the recursion depth limit."""
     OCamlValue(addr).show(recurse)
     print ""
 
+  @TraceAll
   def invoke(self, arg, from_tty):
     self.size_t = gdb.lookup_type("size_t")
     args = gdb.string_to_argv(arg)
