@@ -47,6 +47,9 @@
 # Changelog
 # ---------
 #
+# 2016-07-28
+#   Add ml_validate, ml_show, ml_target and a host of utility code
+#
 # 2016-01-17
 #   New command `ml_scan` to show values in OCaml heap
 #
@@ -1871,6 +1874,66 @@ class ValidateHeap(gdb.Command):
     print("Totals: scanned %d values, skipped %d values, total of %5dB" % (values, skipped, bytes))
 
 ValidateHeap()
+
+class ShowValue(gdb.Command):
+  """
+  Display an OCaml value (recursively)
+  ml_show [/r<N>] <value> [verbosity]
+  """
+  def __init__(self):
+    gdb.Command.__init__(self, "ml_show", gdb.COMMAND_DATA, gdb.COMPLETE_SYMBOL, False)
+
+  def parse_as_addr(self,addr):
+    x = gdb.parse_and_eval(addr)
+    if x.address == None:
+      return x.cast(size_t.pointer())
+    else: # l-value, prevent short read when no debugging info
+      return gdb.parse_and_eval("*((size_t*)&"+addr+")").cast(size_t.pointer())
+
+  def show(self, value, depth, recurse, verbosity):
+    valid, what, children = value.try_parse(verbosity)
+    what = what.replace('\0', "\\0")
+    prefix = "  " * depth
+    print("%s%s %s" % (prefix, what, '= [' if len(children) and recurse else ''))
+    if recurse:
+      for child in children:
+        self.show(child, depth + 1, recurse - 1, verbosity)
+
+    if len(children) and recurse:
+      print("%s%s" % (prefix, ']'))
+
+  @TraceAll
+  def invoke(self, arg, from_tty):
+    init_types()
+    init_memoryspace()
+    args = gdb.string_to_argv(arg)
+    recurse = 1
+    verbosity = 1
+    if len(args) < 1 or len(args) > 3:
+      print("Wrong usage, see \"help ml_show\"")
+      return
+
+    if len(args) == 1:
+      addr = self.parse_as_addr(args[0])
+    elif len(args) == 3:
+      if not args[0].startswith("/r"):
+        print("recursivity must be specified as /rN")
+        return
+      recurse = int(args[0][2:])
+      addr = self.parse_as_addr(args[1])
+      verbosity = int(args[2])
+    else:
+      if args[0].startswith('/r'):
+        recurse = int(args[0][2:])
+        addr = self.parse_as_addr(args[1])
+      else:
+        addr = self.parse_as_addr(args[0])
+        verbosity = int(args[1])
+
+    value = OCamlValue(addr)
+    self.show(value, 0, recurse, verbosity)
+
+ShowValue()
 
 class ShowMemory(gdb.Command):
   """
