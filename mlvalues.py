@@ -135,12 +135,12 @@ def try_dereference(gdbval):
     return None
 
 # gdb.Type's used often throughout the script
-intnat = size_t = charp = doublep = heap_chunk_head_p = None
+intnat = size_t = charp = doublep = heap_chunk_head_p = caml_contextp = caml_thread_structp = None
 
 # do not lookup types at class level cause this script may be run before
 # the inferior image is loaded and gdb can't know sizeof(long) in advance
 def init_types():
-  global intnat, size_t, charp, doublep, heap_chunk_head_p
+  global intnat, size_t, charp, doublep, heap_chunk_head_p, caml_contextp, caml_thread_structp
 
   if doublep is not None:
     return
@@ -149,6 +149,18 @@ def init_types():
     heap_chunk_head_p = gdb.lookup_type("heap_chunk_head").pointer()
   except:
     print("Didn't find 'heap_chunk_head'. Major heap walking is unavailable")
+    pass
+
+  try:
+    caml_contextp = gdb.lookup_type("struct caml_context").pointer()
+  except:
+    print("Didn't find 'struct caml_context'. Stack walking unavailable.")
+    pass
+
+  try:
+    caml_thread_structp = gdb.lookup_type("caml_thread_struct").pointer()
+  except:
+    print("Didn't find 'caml_thread_struct'. System thread roots unavailable.")
     pass
 
   intnat = gdb.lookup_type("intnat")
@@ -1487,6 +1499,284 @@ Optional /r flag controls the recursion depth limit."""
         addr = addr + x.size_words() + 1
 
 ScanOCamlValue()
+
+# The functions below mimic the behavior of the OCaml run-time when performing GC.
+# In C programs, memory must be handled explicitly by the developer.
+# In C++ programs, tools like shared_pointer, unique_pointer, ... make memory management
+# easier, yet still explicit. Memory is lost when no longer referenced.
+# In languages with GC, memory management is not explicit, but handled by the run-time.
+# Referenced memory is discoverable through "roots", leaving the GC with the knowledge
+# that all other allocated memory is unreferenced and can be reclaimed/reused.
+# In OCaml there are multiple roots, each of which is described near the function
+# that discovers it below.
+
+def get_value(name, type):
+  return gdb.parse_and_eval("""*( (%s*)(&%s) )""" % (type, name))
+
+# Global roots are global values from C-code that are registered into the GC.
+def get_global_roots(roots_list_name):
+  """
+  Traverse the linked list of the provided global roots list and return a list of root addresses.
+  """
+  roots_list = gdb.parse_and_eval(roots_list_name)
+  ret = []
+  if roots_list == 0:
+    return ret
+  global_root = roots_list['forward'].dereference()
+  while global_root != 0:
+    root = global_root.dereference()['root'].dereference()
+    ret.append((root, root+1, roots_list_name))
+    global_root = global_root.dereference()['forward'].dereference()
+  return ret
+
+# Local roots are roots in the stack of C-code.
+# They are automatically generated and registered from the CAMLxparam, CAMLlocal, ... macro's
+# and linked together as a linked list.
+def get_local_roots(roots, name):
+  ret = []
+  while roots != 0:
+    root_struct = roots.dereference()
+    for i in range(int(root_struct['ntables'])):
+      for j in range(int(root_struct['nitems'])):
+        value = root_struct['tables'][i][j]
+        ret.append((value, value + size_t.sizeof, name))
+    roots = root_struct['next']
+  return ret
+
+# See byterun/finalise.c:caml_final_do_strong_roots
+# Finalisers can be registered with the GC. They are functions
+# that are called when the GC determines that the value is no
+# longer used and the GC is about to reclaim the memory.
+# These finalisers therefore contain both a closure to a function
+# and an OCamlValue to the relevant block.
+def get_final_roots():
+  ret = []
+
+  try:
+    young = gdb.parse_and_eval("'finalise.d.c'::young").cast(size_t) # avoid ambiguity
+  except gdb.error:
+    try:
+      young = gdb.parse_and_eval("'finalise.c'::young").cast(size_t)
+    except gdb.error:
+      print("Didn't find 'finalise.c::young'. Young finaliser information is missing.")
+      return ret
+
+  for i in range(int(young)):
+    final_struct = gdb.parse_and_eval("final_table[%d]" % i)
+    func = final_struct['fun']
+    val = final_struct['val']
+    ret.append((func, func + size_t.sizeof, "final_table"))
+    ret.append((val, val + size_t.sizeof, "final_table"))
+
+  to_do_ptr = gdb.parse_and_eval("to_do_hd")
+  while to_do_ptr.cast(size_t) != 0:
+    to_do_struct = to_do_ptr.dereference()
+    size = int(to_do_struct["size"].cast(size_t))
+    items = do_to_struct["items"]
+    for i in range(size):
+      item_struct = (items + i).dereference()
+      func = item_struct['fun']
+      val = item_struct['val']
+      ret.append((func, func + size_t.sizeof, "final: to_do"))
+      ret.append((val, val + size_t.sizeof, "final: to_do"))
+
+  return ret
+
+# Dynamic global roots are global variables from dynamically linked libraries.
+# They are added to a linked list of roots.
+def get_dyn_globals():
+  ret = []
+  dyn_globals = gdb.parse_and_eval("caml_dyn_globals")
+  while dyn_globals != 0:
+    dyn_globals_struct = dyn_globals.dereference()
+    v = dyn_globals_struct['data'].cast(size_t)
+    ret.append((v, v + size_t.sizeof, "dyn_globals"))
+    dyn_globals = dyn_globals_struct['next']
+  return ret
+
+# See walk_ocaml_stack() documentation.
+# This function will walk the stack of the active thread first,
+# followed by any other systhreads threads. All threads' information
+# is kept in a linked list of thread information blocks.
+# For the active thread, there are some global variables for quick
+# access. Whenever acquiring or releasing the OCaml run-time lock,
+# calling the GC or a C-function these global variables are updated.
+# When releasing or acquiring the global run-time lock, these global
+# variables are sync'd with the values from the linked list.
+def walk_ocaml_stacks():
+  ret = []
+
+  # scanning for currently active thread
+  sp = gdb.parse_and_eval("caml_bottom_of_stack")
+  retaddr = gdb.parse_and_eval("caml_last_return_address")
+  gc_regs = gdb.parse_and_eval("caml_gc_regs")
+  roots = gdb.parse_and_eval("caml_local_roots")
+
+  ret.extend(walk_ocaml_stack(sp, retaddr, gc_regs))
+  ret.extend(get_local_roots(roots, "caml_local_roots"))
+
+  # scanning for inactive threads
+  # otherlibs/systhreads/st_stubs.c:caml_thread_scan_roots()
+  try:
+    active_thread = thread = gdb.parse_and_eval("curr_thread")
+  except gdb.error:
+    return ret
+
+  while caml_thread_structp is not None:
+    thread_struct = thread.dereference()
+
+    memrange = memoryspace.get_range(thread_struct["bottom_of_stack"])
+    description = "Error: unknown thread" if memrange is None else memrange.description
+
+    descriptor = thread_struct["descr"]
+    ret.append( (descriptor, descriptor + size_t.sizeof, "%s descr" % description) )
+    backtrace_last_exn = thread_struct["caml_backtrace_last_exn"] # there's probably some macro at play here...
+    ret.append( (backtrace_last_exn, backtrace_last_exn + size_t.sizeof, "%s backtrace_last_exn" % description) )
+
+    if thread.cast(size_t) != active_thread.cast(size_t):
+      ret.extend(walk_ocaml_stack(thread_struct["bottom_of_stack"], thread_struct["last_retaddr"], thread_struct["gc_regs"], description))
+      ret.extend(get_local_roots(thread_struct["caml_local_roots"], "%s local roots" % description))
+
+    thread = thread_struct["next"]
+    if thread.cast(size_t) == active_thread.cast(size_t):
+      break
+
+  return ret
+
+# This is a freeform translation of asmrun/roots.c:do_local_roots()
+# We basically walk the stack in search of OCamlValues.
+# C-code should never call the garbage collector directly. Instead
+# Ocaml dynamically inserts calls to the GC wherever memory is allocated.
+# The GC is then called when the minor heap runs out of space to satisfy
+# the current request. Because the compiler is the only one to insert
+# calls to the GC, it knows the state of the stack and CPU registers
+# wrt them contains GC roots.
+# It emits this information in a structure called the caml_frametable.
+# This structure is walked at run-time and a hash-table is created where
+# the key is the return address of the caml_call_gc() function.
+# When traversing the stack, the run-time uses this information to
+# locate the roots on the stack or inside registers.
+def walk_ocaml_stack(sp, retaddr, gc_regs, description="stack"):
+  if caml_contextp is None:
+    return []
+  fd_mask = gdb.parse_and_eval("caml_frame_descriptors_mask")
+  def hash_retaddr(addr):
+    return (addr.cast(size_t) >> 3) & fd_mask
+
+  ret = []
+  if sp == 0:
+    return ret
+
+  reg_names = {  0: "rax",  1: "rbx",  2: "rdi",  3: "rsi",  4: "rdx",  5: "rcx",  6: "r8",  7: "r9",
+                 8: "r12",  9: "r13", 10: "r10", 11: "r11", 12: "rbp" }
+  frame = resolve(retaddr)
+
+  while True:
+    h = hash_retaddr(retaddr)
+    while True:
+      d = gdb.parse_and_eval("caml_frame_descriptors[%d]"%h)
+      d_struct = d.dereference()
+      if d_struct["retaddr"].cast(size_t) == retaddr.cast(size_t):
+        break
+      h = (h+1) & fd_mask
+
+    if d_struct["frame_size"] != 0xFFFF:
+      for n in range(int(d_struct["num_live"])):
+        ofs = gdb.parse_and_eval("caml_frame_descriptors[%d]->live_ofs[%d]" % (h, n)).cast(size_t)
+        if ofs & 1:
+          location = "[%s]" % reg_names.get(int(ofs>>1), "unknown_reg")
+          root = (gc_regs.cast(size_t) + ((ofs >> 1) * size_t.sizeof)).cast(size_t.pointer()).dereference()
+        else:
+          location = "[sp+0x%X]" % ofs
+          root = sp.cast(size_t) + ofs
+        root = root.cast(size_t.pointer())
+        root = root.dereference().cast(size_t)
+        ret.append((root, root+size_t.sizeof, "%s(%s%s)" % (description, frame, location)))
+
+      sp = (sp.cast(size_t) + (d_struct["frame_size"] & 0xFFFC)).cast(charp)
+      retaddr = (sp.cast(size_t) - size_t.sizeof).cast(size_t.pointer()).dereference()
+    else:
+      next_context_p = (sp.cast(size_t) + (2 * size_t.sizeof)).cast(caml_contextp)
+      next_context_struct = next_context_p.dereference()
+      sp = next_context_struct["bottom_of_stack"]
+      retaddr = next_context_struct["last_retaddr"]
+      regs = next_context_struct["gc_regs"]
+      if sp == 0:
+        break
+  return ret
+
+# Compile-time global values.
+# This is an array of OcamlValues to OCaml blocks. There is 1 pointer per module linked in.
+# The last value is a NULL sentinel. caml_globals is part of the .data section.
+def get_globals():
+  ret = []
+  global_data_ptr = gdb.parse_and_eval("caml_globals").cast(size_t.pointer())
+  global_data = global_data_ptr.dereference()
+
+  index = 0
+  while global_data != 0:
+    ret.append((global_data, global_data + size_t.sizeof, "global_data[%d]" % index))
+    global_data_ptr = (global_data_ptr.cast(size_t) + size_t.sizeof).cast(size_t.pointer())
+    global_data = global_data_ptr.dereference()
+    index += 1
+
+  return ret
+
+# OCaml contains a method to dynamically add detection of more roots at run-time
+# through the use of a callback function. Each user must store the previous pointer
+# value, and replace the hook with its own function. Therefore, for each possible
+# hook/symbol, we need to know what symbol is used to store the previous value.
+# The actual discovery of the roots, however is already done in one of the above
+# functions, this is merely a check that we didn't miss any roots we didn't know about.
+def traverse_scan_roots_hook():
+  known_hooks = {
+      "caml_thread_scan_roots": "prev_scan_roots_hook", # handled in walk_ocaml_stacks()
+      # more here, make sure to describe where it's handled
+    }
+
+  scan_roots_hook_ptr = gdb.parse_and_eval("caml_scan_roots_hook")
+  while scan_roots_hook_ptr != 0:
+    scan_roots_hook = resolve(scan_roots_hook_ptr)
+    next_hook = known_hooks.get(scan_roots_hook, None)
+    if next_hook is None:
+      print("Unhandled root scanning function: %s" % scan_roots_hook)
+      return
+    scan_roots_hook_ptr = gdb.parse_and_eval(next_hook)
+
+# See asmrun/roots.c:caml_do_roots for guidance
+# This function walks over all data structures known to contain roots.
+# Following this, you can walk over all OCaml values the GC knows.
+# This is similar to the way the GC performs the "mark" phase.
+# Another function could be written that walks over the heap in a
+# similar fashion to the "sweep" phase.
+# TODO: caml_globals can contain many NULL values yielding warnings/errors
+def get_entry_points():
+  """
+  Returns a list of entry-points (aka roots) from where all live values
+  can be discovered.
+  The list contains tuples (start address, post-end address, source)
+  with source a string identifying where the addresses were discovered.
+  """
+  ret = []
+
+  # global roots
+  ret.extend(get_globals())
+  # dynamic global roots
+  ret.extend(get_dyn_globals())
+  # stacks and local roots
+  ret.extend(walk_ocaml_stacks())
+
+  # global C roots
+  ret.extend(get_global_roots("caml_global_roots"))
+  ret.extend(get_global_roots("caml_global_roots_young"))
+  ret.extend(get_global_roots("caml_global_roots_old"))
+
+  # finalised values
+  ret.extend(get_final_roots())
+
+  # scan_roots_hook
+  traverse_scan_roots_hook()
+  return ret
 
 class ShowMemory(gdb.Command):
   """
