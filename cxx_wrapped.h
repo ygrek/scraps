@@ -1,6 +1,6 @@
 // Simple template to wrap C++ object as OCaml custom value
 // Author: ygrek <ygrek@autistici.org>
-// Version: 2015-09-25
+// Version: 2016-11-18
 
 // This is free and unencumbered software released into the public domain.
 // Anyone is free to copy, modify, publish, use, compile, sell, or
@@ -23,6 +23,9 @@
 // wrapped<> manages smart pointers to C++ objects
 // wrapped_ptr<> manages raw pointers (owns pointed object, release() destroys object)
 //
+// generational_global_root is a RAII wrapper to register GC roots
+// caml_blocking_section is a RAII wrapper to release runtime lock in the given scope
+// without_runtime_lock executes function with runtime lock released
 
 extern "C" {
 #define CAML_NAME_SPACE
@@ -193,3 +196,12 @@ private:
 private:
   value v_;
 };
+
+#if __cplusplus >= 201103L
+template<typename Func, typename ... Args>
+auto without_runtime_lock(Func f, Args && ... args) -> decltype(f(std::forward<Args>(args)...))
+{
+  caml_blocking_section lock;
+  return f(std::forward<Args>(args)...);
+}
+#endif
