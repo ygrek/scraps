@@ -41,6 +41,41 @@
 # Scan OCaml heap region:
 #    ml_scan [/r[N]] addr bytes
 #
+# Validate the OCaml heap:
+#    ml_validate
+# This process can take a while and scans the entire heap, trying to
+# validate all values (e.g. string sizes, overflows, underflows,
+# stray pointers, etc.). Use it to find issues with the garbage
+# collector or OCaml run-time.
+#
+# Show a particular OCaml value, alternative to ml_dump:
+#    ml_show [/r[<N>] <value> [verbosity]
+# Verbosity currently ranges from 0-3, with default being 1.
+# 0: Either type of value or error reason
+# 1: Type and value for simple types
+# 2: Type, value and sub-values for short aggregate/composite types
+#    (Tries not to blow up on your screen)
+# 3: Type, value and sub-values of everything
+# OCaml lists are not detected, a higher recursion depth will
+# be needed to print it out entirely.
+#
+# Show memory address space info with OCaml specific-bits:
+#    ml_target <address|"all"> [verbosity]
+# This command is similar to "info target" but shows OCaml-specifics.
+# Verbosity is only valid for "all", values are 0-2, default is 1:
+# 0: OCaml stack, minor & major heap are displayed
+# 1: Same as 0 and static data, code and known GC metadata areads
+# 2: all memory types are displayed
+# e.g.
+#    ml_target 0x00035208
+#    ml_target all 3
+#
+# Find a particular value in memory:
+#    ml_find <value>
+# Similar to the gdb "find" command, but will also display the memory
+# type (see ml_target) where the value was found, making it easier to
+# find the right occurrence.
+#
 # Use Python class directly for detailed scrutiny, e.g.:
 #    python x = OCamlValue(gdb.parse_and_eval("caml_globals")); print x.size_words()
 #
