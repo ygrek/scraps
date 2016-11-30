@@ -172,6 +172,15 @@ def init_types():
   doublep = gdb.lookup_type("double").pointer()
   # keep this one last
 
+def get_value_safe(name, type=None):
+  try:
+    x = gdb.parse_and_eval(name)
+    if type is not None:
+      x = x.cast(type)
+    return x
+  except gdb.error:
+    return None
+
 class MemoryType(Enum):
   """
   Various types of memory we're interested in
@@ -587,9 +596,9 @@ class MemorySpace:
       self.set_inaccurate("major heap info")
       return
 
-    heap_chunk_ptr = gdb.parse_and_eval("caml_heap_start").cast(heap_chunk_head_p)
+    heap_chunk_ptr = get_value_safe("caml_heap_start", heap_chunk_head_p)
     try:
-      while heap_chunk_ptr != 0:
+      while heap_chunk_ptr is not None and heap_chunk_ptr != 0:
         heap_chunk_head_ptr = heap_chunk_ptr - 1
         heap_chunk_head = heap_chunk_head_ptr.dereference()
 
@@ -608,19 +617,24 @@ class MemorySpace:
     except gdb.MemoryError:
       print("OCaml major heap linked list is corrupt: last entry = 0x%08X" % (heap_chunk_ptr.cast(size_t)))
 
-    gray_vals = gdb.parse_and_eval("gray_vals").cast(size_t)
-    gray_vals_cur = gdb.parse_and_eval("gray_vals_cur").cast(size_t)
-    gray_vals_size = gdb.parse_and_eval("gray_vals_size").cast(size_t)
-    gray_vals_end = gdb.parse_and_eval("gray_vals_end").cast(size_t)
-    self.annotate_split_range(gray_vals, gray_vals_size, MemoryType.GC_Metadata, "major GC's gray values")
-    self.annotate_split_range(gray_vals_cur, gray_vals_end - gray_vals_cur, MemoryType.GC_Metadata, "major GC's current gray values")
+    gray_vals = get_value_safe("gray_vals", size_t)
+    gray_vals_cur = get_value_safe("gray_vals_cur", size_t)
+    gray_vals_size = get_value_safe("gray_vals_size", size_t)
+    gray_vals_end = get_value_safe("gray_vals_end", size_t)
+    if gray_vals is not None and gray_vals_size is not None:
+      self.annotate_split_range(gray_vals, gray_vals_size, MemoryType.GC_Metadata, "major GC's gray values")
+    if gray_vals_cur is not None and gray_vals_end is not None:
+      self.annotate_split_range(gray_vals_cur, gray_vals_end - gray_vals_cur, MemoryType.GC_Metadata, "major GC's current gray values")
 
   def annotate_minor_heap(self):
     """
     Mark the minor heap memory range as such.
     """
-    minor_start = gdb.parse_and_eval("caml_young_base").cast(size_t)
-    minor_size = gdb.parse_and_eval("caml_young_end").cast(size_t) - minor_start
+    minor_start = get_value_safe("caml_young_base", size_t)
+    minor_end = get_value_safe("caml_young_end", size_t)
+    if minor_start is None or minor_end is None:
+      return
+    minor_size = minor_end - minor_start
 
     memrange = self.get_range(minor_start)
     if memrange is not None:
@@ -634,15 +648,15 @@ class MemorySpace:
     """
     Mark the table of finalisers as such.
     """
-    table = gdb.parse_and_eval("final_table").cast(size_t)
-    try:
-      size = gdb.parse_and_eval("'finalise.d.c'::size").cast(size_t)
-    except gdb.error:
-      try:
-        size = gdb.parse_and_eval("'finalise.c'::size").cast(size_t)
-      except:
-        self.set_inaccurate("finalisers")
-        return
+    table = get_value_safe("final_table", size_t)
+    size = get_value_safe("'finalise.d.c'::size", size_t)
+    if size is None:
+      size = get_value_safe("'finalise.c'::size", size_t)
+
+    if table is None or size is None:
+      self.set_inaccurate("finalisers")
+      return
+
     if table != 0 and size != 0:
       self.annotate_split_range(table, size, MemoryType.Finalisers, "Finalisers table")
 
@@ -1521,10 +1535,11 @@ def get_global_roots(roots_list_name):
   """
   Traverse the linked list of the provided global roots list and return a list of root addresses.
   """
-  roots_list = gdb.parse_and_eval(roots_list_name)
+  roots_list = get_value_safe(roots_list_name)
   ret = []
-  if roots_list == 0:
+  if roots_list is None or roots_list == 0:
     return ret
+
   global_root = roots_list['forward'].dereference()
   while global_root != 0:
     root = global_root.dereference()['root'].dereference()
@@ -1555,24 +1570,25 @@ def get_local_roots(roots, name):
 def get_final_roots():
   ret = []
 
-  try:
-    young = gdb.parse_and_eval("'finalise.d.c'::young").cast(size_t) # avoid ambiguity
-  except gdb.error:
-    try:
-      young = gdb.parse_and_eval("'finalise.c'::young").cast(size_t)
-    except gdb.error:
-      print("Didn't find 'finalise.c::young'. Young finaliser information is missing.")
-      return ret
+  young = get_value_safe("'finalise.d.c'::young", size_t) # avoid ambiguity
+  if young is None:
+    young = get_value_safe("'finalise.c'::young", size_t)
+  if young is None:
+    print("Didn't find 'finalise.c::young'. Young finaliser information is missing.")
+    return ret
 
   for i in range(int(young)):
-    final_struct = gdb.parse_and_eval("final_table[%d]" % i)
+    final_struct = get_value_safe("final_table[%d]" % i)
+    if final_struct is None:
+      break
     func = final_struct['fun']
     val = final_struct['val']
     ret.append((func, func + size_t.sizeof, "final_table"))
     ret.append((val, val + size_t.sizeof, "final_table"))
 
-  to_do_ptr = gdb.parse_and_eval("to_do_hd")
-  while to_do_ptr.cast(size_t) != 0:
+  # TODO
+  to_do_ptr = get_value_safe("to_do_hd")
+  while to_do_ptr is not None and to_do_ptr.cast(size_t) != 0:
     to_do_struct = to_do_ptr.dereference()
     size = int(to_do_struct["size"].cast(size_t))
     items = do_to_struct["items"]
@@ -1589,8 +1605,8 @@ def get_final_roots():
 # They are added to a linked list of roots.
 def get_dyn_globals():
   ret = []
-  dyn_globals = gdb.parse_and_eval("caml_dyn_globals")
-  while dyn_globals != 0:
+  dyn_globals = get_value_safe("caml_dyn_globals")
+  while dyn_globals is not None and dyn_globals != 0:
     dyn_globals_struct = dyn_globals.dereference()
     v = dyn_globals_struct['data'].cast(size_t)
     ret.append((v, v + size_t.sizeof, "dyn_globals"))
@@ -1610,20 +1626,21 @@ def walk_ocaml_stacks():
   ret = []
 
   # scanning for currently active thread
-  sp = gdb.parse_and_eval("caml_bottom_of_stack")
-  retaddr = gdb.parse_and_eval("caml_last_return_address")
-  gc_regs = gdb.parse_and_eval("caml_gc_regs")
-  roots = gdb.parse_and_eval("caml_local_roots")
+  sp = get_value_safe("caml_bottom_of_stack")
+  retaddr = get_value_safe("caml_last_return_address")
+  gc_regs = get_value_safe("caml_gc_regs")
+  roots = get_value_safe("caml_local_roots")
 
-  ret.extend(walk_ocaml_stack(sp, retaddr, gc_regs))
-  ret.extend(get_local_roots(roots, "caml_local_roots"))
+  if sp is not None and retaddr is not None and gc_regs is not None:
+    ret.extend(walk_ocaml_stack(sp, retaddr, gc_regs))
+  if roots is not None:
+    ret.extend(get_local_roots(roots, "caml_local_roots"))
 
   # scanning for inactive threads
   # otherlibs/systhreads/st_stubs.c:caml_thread_scan_roots()
-  try:
-    active_thread = thread = gdb.parse_and_eval("curr_thread")
-  except gdb.error:
-    return ret
+  active_thread = thread = get_value_safe("curr_thread")
+  if active_thread is None:
+    return
 
   while caml_thread_structp is not None:
     thread_struct = thread.dereference()
@@ -1662,7 +1679,12 @@ def walk_ocaml_stacks():
 def walk_ocaml_stack(sp, retaddr, gc_regs, description="stack"):
   if caml_contextp is None:
     return []
-  fd_mask = gdb.parse_and_eval("caml_frame_descriptors_mask")
+  fd_mask = get_value_safe("caml_frame_descriptors_mask")
+  if fd_mask is None:
+    return []
+  if get_value_safe("caml_frame_descriptors") is None:
+    return []
+
   def hash_retaddr(addr):
     return (addr.cast(size_t) >> 3) & fd_mask
 
@@ -1677,7 +1699,7 @@ def walk_ocaml_stack(sp, retaddr, gc_regs, description="stack"):
   while True:
     h = hash_retaddr(retaddr)
     while True:
-      d = gdb.parse_and_eval("caml_frame_descriptors[%d]"%h)
+      d = get_value_safe("caml_frame_descriptors[%d]"%h)
       d_struct = d.dereference()
       if d_struct["retaddr"].cast(size_t) == retaddr.cast(size_t):
         break
@@ -1685,7 +1707,7 @@ def walk_ocaml_stack(sp, retaddr, gc_regs, description="stack"):
 
     if d_struct["frame_size"] != 0xFFFF:
       for n in range(int(d_struct["num_live"])):
-        ofs = gdb.parse_and_eval("caml_frame_descriptors[%d]->live_ofs[%d]" % (h, n)).cast(size_t)
+        ofs = get_value_safe("caml_frame_descriptors[%d]->live_ofs[%d]" % (h, n), size_t)
         if ofs & 1:
           location = "[%s]" % reg_names.get(int(ofs>>1), "unknown_reg")
           root = (gc_regs.cast(size_t) + ((ofs >> 1) * size_t.sizeof)).cast(size_t.pointer()).dereference()
@@ -1713,7 +1735,10 @@ def walk_ocaml_stack(sp, retaddr, gc_regs, description="stack"):
 # The last value is a NULL sentinel. caml_globals is part of the .data section.
 def get_globals():
   ret = []
-  global_data_ptr = gdb.parse_and_eval("caml_globals").cast(size_t.pointer())
+  global_data_ptr = get_value_safe("caml_globals", size_t.pointer())
+  if global_data_ptr is None:
+    return ret
+
   global_data = global_data_ptr.dereference()
 
   index = 0
@@ -1737,14 +1762,14 @@ def traverse_scan_roots_hook():
       # more here, make sure to describe where it's handled
     }
 
-  scan_roots_hook_ptr = gdb.parse_and_eval("caml_scan_roots_hook")
-  while scan_roots_hook_ptr != 0:
+  scan_roots_hook_ptr = get_value_safe("caml_scan_roots_hook")
+  while scan_roots_hook_ptr is not None and scan_roots_hook_ptr != 0:
     scan_roots_hook = resolve(scan_roots_hook_ptr)
     next_hook = known_hooks.get(scan_roots_hook, None)
     if next_hook is None:
       print("Unhandled root scanning function: %s" % scan_roots_hook)
       return
-    scan_roots_hook_ptr = gdb.parse_and_eval(next_hook)
+    scan_roots_hook_ptr = get_value_safe(next_hook)
 
 # See asmrun/roots.c:caml_do_roots for guidance
 # This function walks over all data structures known to contain roots.
