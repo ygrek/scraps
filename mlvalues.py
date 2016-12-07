@@ -172,6 +172,10 @@ def try_dereference(gdbval):
   except gdb.MemoryError:
     return None
 
+def print_cont(*args, **kwargs):
+  kwargs["end"] = ''
+  print(*args, **kwargs)
+
 # gdb.Type's used often throughout the script
 intnat = size_t = charp = doublep = heap_chunk_head_p = caml_contextp = caml_thread_structp = None
 
@@ -955,14 +959,14 @@ class OCamlValue:
     return resolve(self.val())
 
   def show_opaque(self,s):
-    print("<%s at 0x%x>" % (s,self.val()))
+    print_cont("<%s at 0x%x>" % (s,self.val()))
 
   def show_seq(self,seq,delim,recurse,raw=False):
     for i, x in enumerate(seq):
       if i:
-        print(delim)
+        print_cont(delim)
       if raw:
-        print(x.resolve())
+        print_cont(x.resolve())
       else:
         x.show(recurse)
 
@@ -1295,34 +1299,34 @@ class OCamlValue:
   @TraceMemoryError
   def show(self,recurse):
       if self.v == 0:
-        print("NULL") # not a value
+        print_cont("NULL") # not a value
       elif self.is_int():
-        print("%d" % self.int())
+        print_cont("%d" % self.int())
       elif self._is_list():
-        print("[")
+        print_cont("[")
         if recurse > 0:
           self.show_seq(self.get_list(), ';', recurse-1)
         else:
-          print("%d values" % self.get_list_length())
-        print("]")
+          print_cont("%d values" % self.get_list_length())
+        print_cont("]")
       else:
         t = self.tag()
         if t == 0:
-          print("(")
+          print_cont("(")
           if recurse > 0:
             self.show_seq(self.fields(), ',', recurse-1)
           else:
-            print("%d fields" % self.size_words())
-          print(")")
+            print_cont("%d fields" % self.size_words())
+          print_cont(")")
         elif t == OCamlValue.LAZY_TAG:
           self.show_opaque("lazy")
         elif t == OCamlValue.CLOSURE_TAG:
-          print("Closure(")
+          print_cont("Closure(")
           if recurse > 0:
             self.show_seq(self.fields(), ',', recurse-1, raw=True)
           else:
-            print("%d fields" % self.size_words())
-          print(")")
+            print_cont("%d fields" % self.size_words())
+          print_cont(")")
         elif t == OCamlValue.OBJECT_TAG:
 #	| x when x = Obj.object_tag ->
 #		let fields = get_fields [] s in
@@ -1341,16 +1345,16 @@ class OCamlValue:
         elif t == OCamlValue.FORWARD_TAG:
           self.show_opaque("forward")
         elif t < OCamlValue.NO_SCAN_TAG:
-          print("Tag%d(" % t)
+          print_cont("Tag%d(" % t)
           if recurse > 0:
             self.show_seq(self.fields(), ',', recurse-1)
           else:
-            print("%d fields" % self.size_words())
-          print(")")
+            print_cont("%d fields" % self.size_words())
+          print_cont(")")
         elif t == OCamlValue.STRING_TAG:
-          print("%s" % self._string())
+          print_cont("%s" % self._string())
         elif t == OCamlValue.DOUBLE_TAG:
-          print("%s" % self._float())
+          print_cont("%s" % self._float())
         elif t == OCamlValue.ABSTRACT_TAG:
           self.show_opaque("abstract")
         elif t == OCamlValue.CUSTOM_TAG:
@@ -1368,7 +1372,7 @@ class OCamlValue:
         elif t == OCamlValue.FINAL_TAG:
           self.show_opaque("final")
         elif t == OCamlValue.DOUBLE_ARRAY_TAG:
-          print("<float array>")
+          print_cont("<float array>")
 #        return "[|%s|]" % "; ".join([x.dump() for x in self.fields()])
         else:
           self.show_opaque("unknown hd=0x%X" % self.hd())
@@ -1398,7 +1402,7 @@ Optional /r flag controls the recursion depth limit."""
       return gdb.parse_and_eval("*((size_t*)&"+addr+")").cast(size_t.pointer())
 
   def show_ptr(self, addr, recurse):
-    print("*0x%x:" % addr.cast(size_t))
+    print_cont("*0x%x:" % addr.cast(size_t))
     OCamlValue(addr.dereference()).show(recurse)
     print("")
 
@@ -1520,7 +1524,7 @@ Optional /r flag controls the recursion depth limit."""
       return gdb.parse_and_eval("*((size_t*)&"+addr+")").cast(size_t.pointer())
 
   def show_val(self, addr, recurse):
-    print("0x%x = " % addr.cast(size_t))
+    print_cont("0x%x = " % addr.cast(size_t))
     OCamlValue(addr).show(recurse)
     print("")
 
