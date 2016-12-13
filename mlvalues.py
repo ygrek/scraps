@@ -1,5 +1,5 @@
 # Inspect OCaml heap and values in GDB
-# 2016/01/17
+# 2016/12/12
 #
 # https://github.com/ygrek/scraps/blob/master/mlvalues.py
 # (c) 2011 ygrek
@@ -10,7 +10,7 @@
 # Description
 # -----------
 #
-# You will need GDB with python support (>=7.0?).
+# You will need GDB with python3.
 # This code reimplements Std.dump from extlib and is
 # limited to information available in runtime representation
 # of OCaml values. Not complete, doesn't handle cycles at all,
@@ -33,7 +33,7 @@
 #    ml_dump gray_vals 5
 #
 # Inspect local (stack) GC roots:
-#    ml_dump [/r[N]] local_roots
+#    ml_dump [/r[N]] caml_local_roots
 #
 # Show OCaml heap information:
 #    ml_heap
@@ -83,7 +83,7 @@
 # ---------
 #
 # 2016-07-28
-#   Add ml_validate, ml_show, ml_target and a host of utility code
+#   Add ml_validate, ml_show, ml_target and a host of utility code (by Amplidata)
 #
 # 2016-01-17
 #   New command `ml_scan` to show values in OCaml heap
@@ -654,7 +654,7 @@ class MemorySpace:
 
         heap_chunk_ptr = heap_chunk_head["next"].cast(heap_chunk_head_p)
     except gdb.MemoryError:
-      print("OCaml major heap linked list is corrupt: last entry = 0x%08X" % (heap_chunk_ptr.cast(size_t)))
+      print("OCaml major heap linked list is corrupt: last entry = 0x%08X" % (int(heap_chunk_ptr.cast(size_t))))
 
     gray_vals = get_value_safe("gray_vals", size_t)
     gray_vals_cur = get_value_safe("gray_vals_cur", size_t)
@@ -715,9 +715,9 @@ def init_memoryspace(reload=False):
 
 def resolve(address):
   """Resolve an address to a symbol (function/variable name)."""
-  symbol = gdb.execute("info symbol 0x%08X" % address.cast(size_t), False, True).split(" ",1)[0]
+  symbol = gdb.execute("info symbol 0x%08X" % int(address.cast(size_t)), False, True).split(" ",1)[0]
   if symbol == "No": # FIXME "No symbol matches"
-    return "0x%08X" % address.cast(size_t)
+    return "0x%08X" % int(address.cast(size_t))
   else:
     return "%s" % symbol
 
@@ -959,7 +959,7 @@ class OCamlValue:
     return resolve(self.val())
 
   def show_opaque(self,s):
-    print_cont("<%s at 0x%x>" % (s,self.val()))
+    print_cont("<%s at 0x%x>" % (s,int(self.val())))
 
   def show_seq(self,seq,delim,recurse,raw=False):
     for i, x in enumerate(seq):
@@ -1375,7 +1375,7 @@ class OCamlValue:
           print_cont("<float array>")
 #        return "[|%s|]" % "; ".join([x.dump() for x in self.fields()])
         else:
-          self.show_opaque("unknown hd=0x%X" % self.hd())
+          self.show_opaque("unknown hd=0x%X" % int(self.hd()))
 
 #  nil = OCamlValue.of_int(0)
 #  true = OCamlValue.of_int(1)
@@ -1402,7 +1402,7 @@ Optional /r flag controls the recursion depth limit."""
       return gdb.parse_and_eval("*((size_t*)&"+addr+")").cast(size_t.pointer())
 
   def show_ptr(self, addr, recurse):
-    print_cont("*0x%x:" % addr.cast(size_t))
+    print_cont("*0x%x:" % int(addr.cast(size_t)))
     OCamlValue(addr.dereference()).show(recurse)
     print("")
 
@@ -1433,7 +1433,7 @@ Optional /r flag controls the recursion depth limit."""
       if args[0] == "local_roots":
         p = gdb.parse_and_eval("*(struct caml__roots_block**)&caml_local_roots")
         while p != 0:
-          print("caml_frame 0x%x" % p.cast(size_t))
+          print("caml_frame 0x%x" % int(p.cast(size_t)))
           for i in range(int(p['nitems'])):
             self.show_ptr(p['tables'][i], recurse)
           p = p['next']
@@ -1524,7 +1524,7 @@ Optional /r flag controls the recursion depth limit."""
       return gdb.parse_and_eval("*((size_t*)&"+addr+")").cast(size_t.pointer())
 
   def show_val(self, addr, recurse):
-    print_cont("0x%x = " % addr.cast(size_t))
+    print_cont("0x%x = " % int(addr.cast(size_t)))
     OCamlValue(addr).show(recurse)
     print("")
 
