@@ -138,7 +138,7 @@ aggregate_stacktrace() {
          print s
       }
 EOF
-   awk -f ${tmpfile}.awk "$2" | sort | uniq -c | sort -r -n -k 1,1
+   awk -f ${tmpfile}.awk "$2" | sort | uniq -c | sort -n -k 1,1
 }
 
 # The main program to run.
