@@ -5,6 +5,8 @@
 
 set -eu
 
+export LC_ALL=C
+
 code_sections() {
   oasis query ListSections | egrep '^(Library|Executable|Object)'
 }
