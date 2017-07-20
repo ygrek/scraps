@@ -1,16 +1,21 @@
 #! /bin/bash
 
 # OASIS query helper
+# https://github.com/ygrek/scraps/blob/master/oasis-query.sh
 
 set -eu
 
+code_sections() {
+  oasis query ListSections | egrep '^(Library|Executable|Object)'
+}
+
 # query oasis for all BuildDepends and exclude internal Library names
 show_deps() {
-  join -v 2 <(oasis query ListSections | grep Library | sed 's/Library(\(.*\))/\1/' | sort -u) <(oasis query $(oasis query ListSections | grep -v ^Test | sed s/$/.BuildDepends/ ) | sed -z -r 's/[, \n]+/\n/g' | sort -u)
+  join -v 2 <(oasis query ListSections | grep Library | sed 's/Library(\(.*\))/\1/' | sort -u) <(oasis query $(code_sections | sed s/$/.BuildDepends/ ) | tr ',' '\n' | awk '($1!=""){print $1}' | sort -u)
 }
 
 show_source_dirs() {
-  oasis query $(oasis query ListSections | grep -v ^Test | sed s/$/.Path/ ) | sort -u
+  oasis query $(code_sections | sed s/$/.Path/ ) | sort -u
 }
 
 show_build_dirs() {
