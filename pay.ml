@@ -59,6 +59,13 @@ let show_standings h =
   |> List.sort (fun (_,a) (_,b) -> compare a b)
   |> List.iter (fun (who,x) -> pr "%s %s" who (money x))
 
+let report_paid name ledger =
+  let x = List.fold_left begin fun acc (_,_,_,payer) ->
+    List.fold_left (fun acc (who,x) -> acc + if who = name then x else 0) acc payer
+  end 0 ledger
+  in
+  pr "%s %s" name (money x)
+
 let on x = `Date x
 let items l = `Items (sum l, l)
 let bill d l = `Items (d,l)
@@ -66,11 +73,9 @@ let share' l = `Share' l
 let share bill l = `Share (bill, l)
 
 let report_argv ledger =
-  let r =
-    match List.tl @@ Array.to_list Sys.argv with
-    | "report"::name::[]
-    | name::[] -> compute ~track:name ledger
-    | [] -> compute ledger
-    | _ -> prerr_endline "wat?"; exit 2
-  in
-  show_standings r
+  match List.tl @@ Array.to_list Sys.argv with
+  | "report"::name::[]
+  | name::[] -> show_standings @@ compute ~track:name ledger
+  | [] -> show_standings @@ compute ledger
+  | "paid"::name::[] -> report_paid name ledger
+  | _ -> prerr_endline "wat?"; exit 2
