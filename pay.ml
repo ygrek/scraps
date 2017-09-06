@@ -1,5 +1,7 @@
 open Printf
 
+let fail fmt = ksprintf failwith fmt
+
 let money x = sprintf "%d.%02d" (x/100) (abs x mod 100)
 let delta x = (if x > 0 then "+" else "") ^ money x
 let pr fmt = ksprintf print_endline fmt
@@ -31,8 +33,8 @@ let compute ?track l =
         sprintf " incl. extra %s (%.2f%%)" (money extra) (100. *. float extra /. float total)
     in
     let tips = if paid - bill <> 0 then sprintf " tipping %d%%" (100 * (paid - bill) / bill) else "" in
-    assert (paid >= bill);
-    assert (bill >= total);
+    if paid < bill then fail "bill %s < paid %s" (money bill) (money paid);
+    if bill < total then fail "bill %s < total %s" (money bill) (money total);
     party |> List.iter (fun (who,x) -> Hashtbl.replace h who (bal who - x - x * (paid - total) / total));
     payer |> List.iter (fun (who,x) -> Hashtbl.replace h who (bal who + x));
     let track =
