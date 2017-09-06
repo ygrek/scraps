@@ -24,6 +24,14 @@ show_build_dirs() {
   show_source_dirs | sed 's@^@_build/@'
 }
 
+show_library_path() {
+  echo $(show_build_dirs) | tr ' ' ':'
+}
+
+env_library_path() {
+  printf "%s:$CAML_LD_LIBRARY_PATH" "$(show_library_path)"
+}
+
 show_include_dirs() {
   ocamlfind query -r -i-format $(show_deps)
   show_build_dirs | sed 's/^/-I /'
@@ -39,10 +47,12 @@ case "${1:-}" in
 "deps") show_deps ;;
 "build-dirs") show_build_dirs ;;
 "source-dirs") show_source_dirs ;;
+"library-path") show_library_path ;;
+"env-library-path") env_library_path ;;
 "include-dirs") show_include_dirs ;;
 "merlin") generate_merlin ;;
 *)
   echo "whoa?" >&2
-  echo "Supported commands : deps build-dirs source-dirs include-dirs merlin" >&2
+  echo "Supported commands : deps build-dirs source-dirs include-dirs merlin library-path env-library-path" >&2
   exit 1
 esac
