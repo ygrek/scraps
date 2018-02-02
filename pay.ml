@@ -2,7 +2,7 @@ open Printf
 
 let fail fmt = ksprintf failwith fmt
 
-let money x = sprintf "%d.%02d" (x/100) (abs x mod 100)
+let money x = (if x < 0 then "-" else "") ^ sprintf "%d.%02d" (abs x / 100) (abs x mod 100)
 let delta x = (if x > 0 then "+" else "") ^ money x
 let pr fmt = ksprintf print_endline fmt
 
