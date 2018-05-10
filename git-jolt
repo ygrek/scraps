@@ -1,0 +1,59 @@
+#! /bin/bash
+#
+# Create worktree for the branch of current repo (if absent) and output path to cd to it.
+# Will automatically setup local tracking branch if passed remote branch.
+# Worktree will be created one level above git dir, so for cleaner layout
+# it is recommended to have checkout structure like <project>/<branch>/.git
+#
+# See helper function below to change directory to worktree in one go.
+#
+# Usage: git jolt { <branch> | <remote>/<branch> }
+
+# TODO
+# - use dir <repo>_<branch> when there is no separate level for branches
+# - cd between projects or from anywhere in fs (global config file)
+
+: <<'COMMENT'
+# suggested for .bashrc
+# function to cd to the worktree dir
+function gj() { cd $(git jolt "$@" 2> /dev/null) ; }
+# bash autocompletion (sourcing required to get __git_complete)
+source /usr/share/bash-completion/completions/git
+_git_jolt() {  __gitcomp_nl "$(__git_refs)"; }
+__git_complete gj _git_jolt
+COMMENT
+
+whereis()
+{
+  git worktree list --porcelain | grep "^branch refs/heads/$1$" -B 3 | grep ^worktree | cut -d ' ' -f 2
+}
+
+cmd() {
+      echo "[#] $*" >&2
+      "$@"
+}
+
+branch=$1
+
+where=$(git name-rev --name-only "$branch")
+
+if [[ "$where" == remotes/* ]] ; then
+  remote=$branch
+  branch=${${where#*/}#*/}
+  # checkout tracking branch, it doesn't exist cause otherwise name-rev would have returned it
+  cmd git branch $branch $remote
+  where=$(git name-rev --name-only "$branch")
+fi
+
+if [ -z "$where" ] ; then >&2 echo cannot find $branch ; exit 1; fi
+
+>&2 echo looking for $where
+dir=$(whereis "$where")
+if [ -z "$dir" ] ; then
+  dir=$(whereis master)
+  if [ -z "$dir" ] ; then >&2 echo cannot find master; exit 2; fi
+  dir=$(realpath -m "$dir/../$where")
+  cmd git worktree add "$dir" "$where"
+fi
+
+echo $dir
