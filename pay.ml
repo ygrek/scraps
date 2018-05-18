@@ -1,3 +1,46 @@
+(* Track group expenses
+
+Consider example.ml :
+
+```
+#!/usr/bin/env ocaml
+#use "pay.ml"
+
+let a = "Alice"
+let b = "Bob"
+let m = "Mallory"
+
+let () = [
+  on "New Year", "cake", share 58_00 [a;b;m], [a, 66_00];
+  on "Jan 2", "cinema", share' [a;b], [b, 40_00];
+  on "Jan 10", "pizza", bill 50_00 [a, 25_00; b, 25_00 / 2; m, 25_00/2], [m, 55_00];
+]
+|> report_argv
+```
+
+Get the global view and final balance:
+
+```
+$ ./example.ml
+[New Year]  cake                 : 58.00 (3 pax), Alice paid 66.00 tipping 13%
+[   Jan 2]  cinema               : 40.00 (2 pax), Bob paid 40.00
+[  Jan 10]  pizza                : 50.00 (3 pax), Mallory paid 55.00 tipping 10%
+
+Bob -15.75
+Alice -3.50
+Mallory 19.25
+```
+
+Report for one participant:
+
+```
+$ ./example.ml report Bob
+[New Year]  -22.00 =  -22.00  : cake                 : 58.00 (3 pax), Alice paid 66.00 tipping 13%
+[   Jan 2]  +20.00 =   -2.00  : cinema               : 40.00 (2 pax), Bob paid 40.00
+[  Jan 10]  -13.75 =  -15.75  : pizza                : 50.00 (3 pax), Mallory paid 55.00 tipping 10%
+```
+*)
+
 open Printf
 
 let fail fmt = ksprintf failwith fmt
