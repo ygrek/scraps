@@ -10,13 +10,14 @@
 # Usage: git jolt { <branch> | <remote>/<branch> }
 
 # TODO
+# - preserve position wrt branch root when switching to a different branch
 # - use dir <repo>_<branch> when there is no separate level for branches
 # - cd between projects or from anywhere in fs (global config file)
 
 : <<'COMMENT'
 # suggested for .bashrc
 # function to cd to the worktree dir
-function gj() { cd $(git jolt "$@" 2> /dev/null) ; }
+function gj() { cd $(git jolt "$@" || echo .) ; }
 # bash autocompletion (sourcing required to get __git_complete)
 source /usr/share/bash-completion/completions/git
 _git_jolt() {  __gitcomp_nl "$(__git_refs)"; }
