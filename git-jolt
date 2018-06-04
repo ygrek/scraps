@@ -24,11 +24,6 @@ _git_jolt() {  __gitcomp_nl "$(__git_refs)"; }
 __git_complete gj _git_jolt
 COMMENT
 
-whereis()
-{
-  git worktree list --porcelain | grep "^branch refs/heads/$1$" -B 3 | grep ^worktree | cut -d ' ' -f 2
-}
-
 cmd() {
       echo "[#] $*" >&2
       "$@"
@@ -42,19 +37,19 @@ if [[ "$where" == remotes/* ]] ; then
   remote=$branch
   branch=${${where#*/}#*/}
   # checkout tracking branch, it doesn't exist cause otherwise name-rev would have returned it
-  cmd git branch $branch $remote
+  cmd git branch $branch "$remote"
   where=$(git name-rev --name-only "$branch")
 fi
 
 if [ -z "$where" ] ; then >&2 echo cannot find $branch ; exit 1; fi
 
->&2 echo looking for $where
-dir=$(whereis "$where")
+>&2 echo "looking for $where"
+dir=$(git worktree list --porcelain | grep "^branch refs/heads/$where$" -B 3 | grep ^worktree | cut -d ' ' -f 2)
 if [ -z "$dir" ] ; then
-  dir=$(whereis master)
+  dir=$(git worktree list --porcelain | grep ^worktree | head -1 | cut -d ' ' -f 2)
   if [ -z "$dir" ] ; then >&2 echo cannot find master; exit 2; fi
   dir=$(realpath -m "$dir/../$where")
-  cmd git worktree add "$dir" "$where"
+  >&2 cmd git worktree add "$dir" "$where"
 fi
 
-echo $dir
+echo "$dir"
