@@ -9,6 +9,8 @@
 #
 # Usage: git jolt { <branch> | <remote>/<branch> }
 
+set -e
+
 # TODO
 # - preserve position wrt branch root when switching to a different branch
 # - use dir <repo>_<branch> when there is no separate level for branches
@@ -35,13 +37,13 @@ where=$(git name-rev --name-only "$branch")
 
 if [[ "$where" == remotes/* ]] ; then
   remote=$branch
-  branch=${${where#*/}#*/}
+  branch=${where#*/*/}
   # checkout tracking branch, it doesn't exist cause otherwise name-rev would have returned it
-  cmd git branch $branch "$remote"
+  >&2 cmd git branch "$branch" "$remote"
   where=$(git name-rev --name-only "$branch")
 fi
 
-if [ -z "$where" ] ; then >&2 echo cannot find $branch ; exit 1; fi
+if [ -z "$where" ] ; then >&2 echo "cannot find $branch" ; exit 1; fi
 
 >&2 echo "looking for $where"
 dir=$(git worktree list --porcelain | grep "^branch refs/heads/$where$" -B 3 | grep ^worktree | cut -d ' ' -f 2)
