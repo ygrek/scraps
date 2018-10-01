@@ -12,9 +12,7 @@
 set -e
 
 # TODO
-# - preserve position wrt branch root when switching to a different branch
 # - use dir <repo>_<branch> when there is no separate level for branches
-# - cd between projects or from anywhere in fs (global config file)
 
 : <<'COMMENT'
 # suggested for .bashrc
@@ -54,4 +52,7 @@ if [ -z "$dir" ] ; then
   >&2 cmd git worktree add "$dir" "$where"
 fi
 
-echo "$dir"
+cur=$(pwd)
+git=$(git rev-parse --show-toplevel)
+rel=${cur#$git}
+echo "$(realpath -m "$dir/$rel")"
