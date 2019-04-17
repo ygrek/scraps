@@ -20,7 +20,7 @@ Options:
    -i ITERATIONS  How many traces to gather and aggregate (default 10)
    -l NUMBER      Aggregate only first NUMBER functions (default 16)
    -p PID         Process ID of the process to trace
-   -t FUNCTION    Function to break on (default caml_call_gc)
+   -t FUNCTION    Function to break on (default caml_gc_dispatch)
 	USAGE
    exit 1
 }
@@ -53,7 +53,7 @@ main ()
   done
   export OPT_p="${OPT_p:-}";
   export OPT_i="${OPT_i:-10}";
-  export OPT_t="${OPT_t:-caml_call_gc}";
+  export OPT_t="${OPT_t:-caml_gc_dispatch}";
   export OPT_l="${OPT_l:-16}";
 
   if [ ! "${OPT_p}" ] ; then
