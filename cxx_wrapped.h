@@ -8,10 +8,14 @@
 // binary, for any purpose, commercial or non-commercial, and by any means.
 // For more information, please refer to <http://unlicense.org/>
 
-// value wrapped<Ptr>::alloc(Ptr)
+// value wrapped<Ptr>::alloc(Ptr,tag=0,mem=0,max=1)
 //    creates custom value with pointer to C++ object inside
 //    finalizer will release pointer (whether destructor will be called
 //    depends on the semantics of the pointer)
+//    tag is optional tag attached to custom value
+//    mem and max are parameters of caml_alloc_custom
+// value wrapped<Ptr>::alloc_mem(Ptr,tag,used)
+//    same as wrapped<Ptr>::alloc but using caml_alloc_custom_mem
 // void wrapped<Ptr>::release(value)
 //    releases wrapped pointer
 // Ptr const& wrapped<Ptr>::get(value)
@@ -94,7 +98,7 @@ public:
   }
 
   template<class TPtr>
-  static value alloc(TPtr p, size_t tag = 0)
+  static value alloc(TPtr p, size_t tag = 0, mlsize_t wmem = 0, mlsize_t wmax = 1)
   {
     //printf("alloc %lx : %s\n",(size_t)p.get(),name());
     CAMLparam0();
@@ -112,14 +116,38 @@ public:
 #endif
     };
 
-    v = caml_alloc_custom(&wrapped_ops, sizeof(ml_wrapped*), 0, 1);
-
+    v = caml_alloc_custom(&wrapped_ops, sizeof(ml_wrapped*), wmem, wmax);
     Wrapped_val(v) = new ml_wrapped(p, tag);
-
     count_++;
 
     CAMLreturn(v);
   }
+
+#if defined(caml_alloc_custom_mem)
+  template<class TPtr>
+  static value alloc_mem(TPtr p, size_t tag, mlsize_t used)
+  {
+    //printf("alloc %lx : %s\n",(size_t)p.get(),name());
+    CAMLparam0();
+    CAMLlocal1(v);
+
+    static struct custom_operations wrapped_ops = {
+      const_cast<char*>(name()),
+      finalize,
+      custom_compare_default,
+      custom_hash_default,
+      custom_serialize_default,
+      custom_deserialize_default,
+      custom_compare_ext_default,
+    };
+
+    v = caml_alloc_custom_mem(&wrapped_ops, sizeof(ml_wrapped*), used);
+    Wrapped_val(v) = new ml_wrapped(p, tag);
+    count_++;
+
+    CAMLreturn(v);
+  }
+#endif
 
 #undef Wrapped_val
 
@@ -146,10 +174,16 @@ struct wrapped_ptr : public wrapped<typename raw_ptr<T>::ptr>
   {
     return base::get(v).get();
   }
-  static value alloc(T* p, size_t tag = 0)
+  static value alloc(T* p, size_t tag = 0, mlsize_t wmem = 0, mlsize_t wmax = 1)
   {
-    return base::alloc(p,tag);
+    return base::alloc(p,tag,wmem,wmax);
   }
+#if defined(caml_alloc_custom_mem)
+  static value alloc_mem(T* p, size_t tag, mlsize_t used)
+  {
+    return base::alloc_mem(p,tag,used);
+  }
+#endif
 }; // wrapped_ptr
 
 #if defined(__GNUC__)
