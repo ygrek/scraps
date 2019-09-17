@@ -1,6 +1,6 @@
 // Simple template to wrap C++ object as OCaml custom value
 // Author: ygrek <ygrek@autistici.org>
-// Version: 2016-11-18
+// Version: 2019-09-17
 
 // This is free and unencumbered software released into the public domain.
 // Anyone is free to copy, modify, publish, use, compile, sell, or
@@ -24,7 +24,7 @@
 // wrapped_ptr<> manages raw pointers (owns pointed object, release() destroys object)
 //
 // generational_global_root is a RAII wrapper to register GC roots
-// caml_blocking_section is a RAII wrapper to release runtime lock in the given scope
+// caml_release_runtime is a RAII wrapper to release runtime lock in the given scope
 // without_runtime_lock executes function with runtime lock released
 
 extern "C" {
@@ -35,6 +35,7 @@ extern "C" {
 #include <caml/custom.h>
 #include <caml/fail.h>
 #include <caml/signals.h>
+#include <caml/threads.h>
 }
 
 #include <memory>
@@ -159,15 +160,18 @@ struct wrapped_ptr : public wrapped<typename raw_ptr<T>::ptr>
 
 static size_t UNUSED wrapped_tag(value x) { return wrapped_ptr<void>::tag(x); }
 
-class caml_blocking_section // : boost::noncopyable
+class caml_release_runtime // : boost::noncopyable
 {
 public:
-  caml_blocking_section() { caml_enter_blocking_section(); }
-  ~caml_blocking_section() { caml_leave_blocking_section(); }
+  caml_release_runtime() { caml_release_runtime_system(); }
+  ~caml_release_runtime() { caml_acquire_runtime_system(); }
 private:
-  caml_blocking_section( const caml_blocking_section& );
-  const caml_blocking_section& operator=( const caml_blocking_section& );
+  caml_release_runtime( const caml_release_runtime& );
+  const caml_release_runtime& operator=( const caml_release_runtime& );
 };
+
+// compatibiliy
+typedef caml_release_runtime caml_blocking_section;
 
 class generational_global_root // : boost::noncopyable
 {
