@@ -114,6 +114,9 @@ public:
 #if defined(custom_compare_ext_default)
       custom_compare_ext_default,
 #endif
+#if defined(custom_fixed_length_default)
+  custom_fixed_length_default,
+#endif
     };
 
     v = caml_alloc_custom(&wrapped_ops, sizeof(ml_wrapped*), wmem, wmax);
