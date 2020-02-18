@@ -1,6 +1,6 @@
 // Simple template to wrap C++ object as OCaml custom value
 // Author: ygrek <ygrek@autistici.org>
-// Version: 2019-09-17
+// Version: 2020-02-18
 
 // This is free and unencumbered software released into the public domain.
 // Anyone is free to copy, modify, publish, use, compile, sell, or
@@ -115,7 +115,7 @@ public:
       custom_compare_ext_default,
 #endif
 #if defined(custom_fixed_length_default)
-  custom_fixed_length_default,
+      custom_fixed_length_default,
 #endif
     };
 
@@ -126,7 +126,8 @@ public:
     CAMLreturn(v);
   }
 
-#if defined(caml_alloc_custom_mem)
+// caml_alloc_custom_mem was added in the same release as fixed_length field
+#if defined(custom_fixed_length_default)
   template<class TPtr>
   static value alloc_mem(TPtr p, size_t tag, mlsize_t used)
   {
@@ -142,6 +143,7 @@ public:
       custom_serialize_default,
       custom_deserialize_default,
       custom_compare_ext_default,
+      custom_fixed_length_default,
     };
 
     v = caml_alloc_custom_mem(&wrapped_ops, sizeof(ml_wrapped*), used);
