@@ -101,6 +101,9 @@ aggregate_stacktrace() {
             targ = substr(targ, 1, index(targ, ".") - 1);
             targ = targ "::??";
          }
+         else if ( ${demangle} == 1 && targ ~ /^camlDune__exe__/) {
+           sub(/^camlDune__exe__/,"",targ);
+         }
          else if ( ${demangle} == 1 && targ ~ /^caml/ && targ !~ /^caml_/ ) {
            a = split(targ, p, "_");
            if (a > 1 && p[a] ~ /^[0-9]+$/)
