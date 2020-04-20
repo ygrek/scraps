@@ -65,7 +65,7 @@ main ()
  
   for i in $(seq 1 $OPT_i); do
     gdb -p "$OPT_p" "/proc/$OPT_p/exe" -batch -n -q -ex 'set interactive off' -ex "b $OPT_t" -ex 'c' -ex 'bt'\
-    |awk '/^#[^0]/ {print $4}' |uniq |head -n "$OPT_l" |paste -s -d , ;
+    |awk '/^#[^0]/ {print $4}' |grep -Fv caml_garbage_collection |grep -Fv caml_call_gc |uniq |head -n "$OPT_l" |paste -s -d , ;
   done |sort |uniq -c |sort -n;
 }
 
