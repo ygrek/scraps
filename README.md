@@ -1,5 +1,6 @@
 * [Bencode](bencode.ml) - parse [bencode](http://www.bittorrent.org/beps/bep_0003.html)'d structures (Bittorrent metadata)
 * [cxx_wrapped.h](cxx_wrapped.h) - simple template to wrap C++ object as OCaml custom value (used for example in [ocaml-hypertable](https://github.com/ygrek/ocaml-hypertable/))
+* [git-branches](git-branches) - git subcommand to compactly show every branch (with its top commit) in the repository
 * [git-jolt](git-jolt) - easily create and navigate git worktrees for branches
 * [idn.ml](idn.ml) - copy of punycode and IDN module for OCaml (previously available at http://caml.ru/~dima/ocaml/idn.ml) with some bugfixes
 * [Measure](measure.ml) - simple module to measure code speed and allocation rate

@@ -1,0 +1,5 @@
+#! /usr/bin/env bash
+
+for branch in $(git for-each-ref --format='%(refname:short)' refs/remotes/ refs/heads/ "$@" | grep -v '^origin/HEAD$'); do
+  echo -e "$(git show --format='%ci     %<(24)%cr %<(24)%an' $branch -- | head -n 1) \\t$branch"
+done | sort -r | less -XF
