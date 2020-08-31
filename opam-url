@@ -1,0 +1,69 @@
+#!/bin/bash
+
+set -eu
+
+if [ $# -eq 0 ]; then
+  echo 'usage: opam-url <name> <version> [user]'
+  exit 2
+fi
+
+ext=tar.gz
+name=$1
+version=$2
+org=${3:-ygrek}
+if [ "$name" = "ocaml-extlib" ]; then
+  fname=extlib
+else
+  fname=$name
+fi
+
+if [ "$name" = "mldonkey" ]; then
+  tag=release-$(echo $version | tr '.' '-')
+else
+  tag=$version
+fi
+
+release=~/p/release/$name/$fname-$version.$ext
+if [ ! -f "$release" ]; then
+  ext=tar.bz2
+  release=~/p/release/$name/$fname-$version.$ext
+  if [ ! -f "$release" ]; then
+    echo "$release doesn't exist"
+    exit 3
+  fi
+fi
+src="https://ygrek.org/p/release/$name/$fname-$version.$ext"
+mirror1="https://github.com/$org/$name/releases/download/v$tag/$fname-$version.$ext"
+mirror2="https://github.com/$org/$name/releases/download/$tag/$fname-$version.$ext"
+
+function cuts0 {
+  awk '{print $1}'
+}
+
+if [ "$(curl -s -L "$src" | sha256sum - | cuts0)" != "$(sha256sum "$release" | cuts0)" ]; then
+  echo "$src bad"
+  unset src
+fi
+mirror=$mirror1
+if [ "$(curl -s -L "$mirror" | sha256sum - | cuts0)" != "$(sha256sum "$release" | cuts0)" ]; then
+  mirror=$mirror2
+  [ "$(curl -s -L "$mirror" | sha256sum - | cuts0)" == "$(sha256sum "$release" | cuts0)" ] || (echo "$mirror bad"; exit 2)
+fi
+
+echo "url {"
+if [ -v src ]; then
+echo "  src: \"$src\""
+else
+echo "  src: \"$mirror\""
+fi
+cat <<EOF
+  checksum: [
+    "md5=$(md5sum "$release" | cuts0)"
+    "sha256=$(sha256sum "$release" | cuts0)"
+    "sha512=$(sha512sum "$release" | cuts0)"
+  ]
+EOF
+if [ -v src ]; then
+echo "  mirrors: \"$mirror\""
+fi
+echo "}"
