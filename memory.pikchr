@@ -1,0 +1,40 @@
+
+scale *= 1.5
+fontscale = 0.8
+
+B1: box width 3cm height 3cm thin color gray
+B2: box same
+B3: box same with .ne at previous.sw
+B4: box same
+
+T1: box invisible "Inactive" fit at B1.center 
+T2: box same "Active" at B2.center
+T3: box same "MemFree" at B3.center
+T4: box same "Mapped" at B4.center
+
+move right 0.05 from T1.s
+arrow down even with T3.n chop "reclaim" aligned above
+move left 0.05 from T3.n
+arrow up even with T1.s chop "malloc" aligned above
+
+//arrow from T2.s+(0.1,0) to T4.n+(0.1,0) chop "reclaim" aligned above
+//arrow from T4.n-(0.1,0) to T2.s-(0.1,0) chop "touch" aligned above
+
+move up 0.05 from T1.e
+arrow right even with T2.w chop "touch" aligned above
+move down 0.05 from T1.e 
+arrow same <- chop "MADV_FREE" below
+
+arrow from T3.e+(0,0.05) right even with T4.w chop "mmap" aligned above
+arrow same <- from T3.e-(0,0.05) chop "munmap" below
+
+arrow from 0.1 left of T3.ne to T2.sw chop "calloc" aligned rjust above
+arrow same <- from T3.ne "free" aligned below
+
+line invisible from B1.sw to B1.nw "allocated" above aligned
+line invisible from B3.sw to B3.nw "free" above aligned
+line invisible from B3.sw-(0.5cm,0) to B1.nw-(0.5cm,0) "userspace" above aligned
+"free" below at B3.s
+"mapped" below at B4.s
+line invisible from B3.sw to B4.se
+"kernel" at 0.5cm below previous
