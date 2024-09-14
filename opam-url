@@ -17,10 +17,29 @@ else
   fname=$name
 fi
 
+if [ "$name" = "ocaml-extunix" ]; then
+  gname=extunix
+else
+  gname=$name
+fi
+
 if [ "$name" = "mldonkey" ]; then
   tag=release-$(echo $version | tr '.' '-')
 else
   tag=$version
+fi
+
+if [ "$name" = "devkit" ]; then
+  org=ahrefs
+  ext=tbz
+fi
+
+if [ "$name" = "ocaml-murmur3" ]; then
+  org=ahrefs
+fi
+
+if [ "$name" = "ocaml-mariadb" ]; then
+  org=andrenth
 fi
 
 release=~/p/release/$name/$fname-$version.$ext
@@ -28,26 +47,26 @@ if [ ! -f "$release" ]; then
   ext=tar.bz2
   release=~/p/release/$name/$fname-$version.$ext
   if [ ! -f "$release" ]; then
-    echo "$release doesn't exist"
+    echo "E: $release doesn't exist"
     exit 3
   fi
 fi
 src="https://ygrek.org/p/release/$name/$fname-$version.$ext"
-mirror1="https://github.com/$org/$name/releases/download/v$tag/$fname-$version.$ext"
-mirror2="https://github.com/$org/$name/releases/download/$tag/$fname-$version.$ext"
+mirror1="https://github.com/$org/$gname/releases/download/v$tag/$fname-$version.$ext"
+mirror2="https://github.com/$org/$gname/releases/download/$tag/$fname-$version.$ext"
 
 function cuts0 {
   awk '{print $1}'
 }
 
 if [ "$(curl -s -L "$src" | sha256sum - | cuts0)" != "$(sha256sum "$release" | cuts0)" ]; then
-  echo "$src bad"
+  echo "W: $src bad"
   unset src
 fi
 mirror=$mirror1
 if [ "$(curl -s -L "$mirror" | sha256sum - | cuts0)" != "$(sha256sum "$release" | cuts0)" ]; then
   mirror=$mirror2
-  [ "$(curl -s -L "$mirror" | sha256sum - | cuts0)" == "$(sha256sum "$release" | cuts0)" ] || (echo "$mirror bad"; exit 2)
+  [ "$(curl -s -L "$mirror" | sha256sum - | cuts0)" == "$(sha256sum "$release" | cuts0)" ] || (echo "E:$mirror bad"; exit 2)
 fi
 
 echo "url {"
