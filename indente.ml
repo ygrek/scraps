@@ -6,8 +6,8 @@ open Printf
 let loc { Parsetree.pexp_loc = loc; _ } = Location.get_pos_info loc.loc_start
 let col expr = let (_,_,c) = loc expr in c
 
-let mapper = { Ast_mapper.default_mapper with
-  expr = fun mapper expr ->
+let iter = { Ast_iterator.default_iterator with
+  expr = fun iter expr ->
     begin match expr with
     | { pexp_desc = Pexp_sequence ({ pexp_desc = Pexp_ifthenelse (_cond,e_then,e_else); _ } as e_if, next); _ } ->
       let last = Option.value ~default:e_then e_else in
@@ -16,11 +16,11 @@ let mapper = { Ast_mapper.default_mapper with
         printf "Suspicious indentation of next expression after if at %s %d\n%!" file line
     | _ -> ()
     end;
-    Ast_mapper.default_mapper.expr mapper expr
+    Ast_iterator.default_iterator.expr iter expr
   }
 
 let parse file =
-  ignore @@ mapper.structure mapper @@ Pparse.parse_implementation ~tool_name:"indetect" file
+  iter.structure iter @@ Pparse.parse_implementation ~tool_name:"indetect" file
 
 let () =
    Sys.argv |> Array.iteri begin fun i file ->
