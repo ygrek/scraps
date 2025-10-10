@@ -7,6 +7,7 @@
 * [memsum](memsum) - shell script to quickly see memory usage summed over process groups
 * [mlvalues.py](mlvalues.py) - GDB/python script to inspect OCaml runtime, heap and individual values
 * [oasis-query.sh](oasis-query.sh) - shell helper to extract useful information from [oasis](https://github.com/ocaml/oasis)
+* [opam-ls](opam-ls.lil) - [Lil](https://beyondloom.com/decker/learnlil.html) script to list modules available in opam switch
 * [opam-url](opam-url) - shell helper to generate url section of [opam](https://opam.ocaml.org) file
 * [Php_serialize](php_serialize.ml) - parse and construct [php\_serialize](http://php.net/manual/en/function.serialize.php)'d values
 * [pay.ml](pay.ml) - simple group expenses recording and bill splitting

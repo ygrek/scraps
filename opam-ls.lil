@@ -1,0 +1,23 @@
+# list opam switch contents as (opam package, (dune) library name, module) lines for easy fzf search
+
+on run cmd do "" drop "\n" split shell[cmd].out end
+
+opam:table ("opam","cma") dict flip raze
+  each p in "%[name]s %[files]s" parse run["opam list -s --columns=name,installed-files"]
+    (list p.name) cross extract value where value like "*.cma" from "" drop " " split p.files
+end
+# show[opam]
+
+t.package:"%s " parse run["ocamlfind list"]
+t.cma:each p in t.package first run["ocamlfind query -a-format -predicates byte %s" format p] end # TODO can be 2 cma?
+dune:table t
+# show[dune]
+
+obj:table ("cma","module") dict flip raze
+  each c in t.cma
+    modules: nil drop "Unit name: %s" parse run["ocamlobjinfo %s" format c]
+    (list c) cross extract value where ! value like "*`." from each m in modules "." fuse "__" split m end
+  end
+
+# print["opam dune module"]
+print @ list ("\n","%s %s %s") format "cma" drop opam join dune join obj
